@@ -10,8 +10,11 @@ database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 migrations_dir = "../../infra/migrations"
 
-[[send_email]]
-name = "EMAIL"
+# MS-35: email is provisioned and sent by Naelao Email (workers/email) over this binding. AgentPort has no
+# send_email binding, no email() handler and no email domain variables of its own any more.
+[[services]]
+binding = "NAELAO_EMAIL"
+service = "naelao-email"
 
 [triggers]
 crons = ["* * * * *"]
@@ -19,16 +22,14 @@ crons = ["* * * * *"]
 [vars]
 ENVIRONMENT = "development"
 AGENTPORT_ISSUER = "https://agentport.naelao.com"
-# Set both to the same verified Email Service / Email Routing domain before enabling email provisioning.
-EMAIL_SENDING_DOMAIN = ""
-EMAIL_INGRESS_DOMAIN = ""
+# Inbox domains are Naelao Email's (NAELAO_EMAIL_DOMAINS in workers/email). Keep false until Naelao Email is enabled.
 EMAIL_PROVISIONING_ENABLED = "false"
 AGENTPORT_ORG_LINK_ENABLED = "false"
 # AgentPort owns its developer JWT secret. Configure it and PLATFORM_SECRET via Wrangler secrets.
 # wrangler secret put AGENTPORT_JWT_SECRET; wrangler secret put PLATFORM_SECRET
 
 [env.staging]
-vars = { ENVIRONMENT = "staging", AGENTPORT_ISSUER = "https://agentport-staging.naelao.com", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "", EMAIL_PROVISIONING_ENABLED = "false", AGENTPORT_ORG_LINK_ENABLED = "false" }
+vars = { ENVIRONMENT = "staging", AGENTPORT_ISSUER = "https://agentport-staging.naelao.com", EMAIL_PROVISIONING_ENABLED = "false", AGENTPORT_ORG_LINK_ENABLED = "false" }
 [env.staging.triggers]
 crons = ["* * * * *"]
 [[env.staging.d1_databases]]
@@ -36,14 +37,15 @@ binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 migrations_dir = "../../infra/migrations"
-[[env.staging.send_email]]
-name = "EMAIL"
+[[env.staging.services]]
+binding = "NAELAO_EMAIL"
+service = "naelao-email-staging"
 [[env.staging.routes]]
 pattern = "agentport-staging.naelao.com/*"
 zone_name = "naelao.com"
 
 [env.production]
-vars = { ENVIRONMENT = "production", AGENTPORT_ISSUER = "https://agentport.naelao.com", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "", EMAIL_PROVISIONING_ENABLED = "false", AGENTPORT_ORG_LINK_ENABLED = "false" }
+vars = { ENVIRONMENT = "production", AGENTPORT_ISSUER = "https://agentport.naelao.com", EMAIL_PROVISIONING_ENABLED = "false", AGENTPORT_ORG_LINK_ENABLED = "false" }
 [env.production.triggers]
 crons = ["* * * * *"]
 [[env.production.d1_databases]]
@@ -51,8 +53,9 @@ binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 migrations_dir = "../../infra/migrations"
-[[env.production.send_email]]
-name = "EMAIL"
+[[env.production.services]]
+binding = "NAELAO_EMAIL"
+service = "naelao-email-production"
 [[env.production.routes]]
 pattern = "agentport.naelao.com/*"
 zone_name = "naelao.com"

@@ -1,10 +1,9 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { verifyAgentCredentialLocal } from "./identity.js";
 import { agentPortRoutes } from "./routes.js";
-import { handleAgentPortEmail } from "../email.js";
 import { deliverEventNotifications, eventWebhookSignature } from "../notifications.js";
 
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
@@ -25,6 +24,7 @@ function fixture() {
   db.exec(readFileSync(new URL("../../../../infra/migrations/0168_agentport_client_neutral_host_resources.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../../../../infra/migrations/0169_agentport_email_accounts.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../../../../infra/migrations/0171_agentport_event_notifications.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../../../../infra/migrations/0299_agentport_naelao_email_link.sql", import.meta.url), "utf8"));
   const platformDb = { prepare(sql: string) {
     let values: unknown[] = [];
     const statement = {
@@ -489,50 +489,59 @@ describe("AgentPort internal registry API", () => {
     db.close();
   }, 30000);
 
-  it("provisions, sends, receives, idempotently tracks, and revokes content-free managed email accounts", async () => {
+  it("provisions, sends, idempotently tracks, and revokes content-free managed email accounts through Naelao Email", async () => {
     const { db, platformDb } = fixture(); const secret = "test-platform-secret";
     const headers = { "content-type": "application/json", "x-agentport-tenant-id": "tenant-a", "x-agentport-internal-token": await mintInternalToken(secret, "tenant-a"), "x-agentport-actor-role": "agentport_api", "x-agentport-owner-id": "owner-1", "x-agentport-owner-type": "individual" };
-    const send = vi.fn(async () => ({ messageId: "provider-send-1" }));
-    const fetch = vi.fn().mockResolvedValueOnce(new Response("retry", { status: 503 })).mockResolvedValueOnce(new Response("accepted", { status: 202 }));
     const signingSecret = "agentport-test-signing-secret-which-is-long-enough-32";
-    const configuredEnv = { PLATFORM_SECRET: secret, AGENTPORT_JWT_SECRET: signingSecret, AGENTPORT_ISSUER: "https://issuer.example", EMAIL: { send }, EMAIL_SENDING_DOMAIN: "mail.example.net", EMAIL_INGRESS_DOMAIN: "mail.example.net", EMAIL_PROVISIONING_ENABLED: "false", PLATFORM_DB: platformDb };
+    const naelao = fakeNaelaoEmail();
+    const configuredEnv = { PLATFORM_SECRET: secret, AGENTPORT_JWT_SECRET: signingSecret, AGENTPORT_ISSUER: "https://issuer.example", NAELAO_EMAIL: naelao.binding, EMAIL_PROVISIONING_ENABLED: "false", PLATFORM_DB: platformDb };
     const env = configuredEnv as never;
     const call = (path: string, method: string, body?: unknown) => agentPortRoutes.fetch(new Request(`https://agentport.test${path}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
     const registration = await call("/agents", "POST", { principalId: "owner-1", principalType: "individual", createdBy: "owner-1", hostPlatform: "external" });
     const { agent } = await registration.json() as { agent: { id: string } };
     expect((await call("/email/accounts", "POST", { agentId: agent.id, inboundWebhookUrl: "https://hooks.builder.com/mail", idempotencyKey: "disabled-1" })).status).toBe(503);
+    expect(naelao.requests).toHaveLength(0);
     configuredEnv.EMAIL_PROVISIONING_ENABLED = "true";
     const provision = await call("/email/accounts", "POST", { agentId: agent.id, inboundWebhookUrl: "https://hooks.builder.com/mail", idempotencyKey: "provision-1" });
     expect(provision.status).toBe(201);
+    const provisionText = await provision.clone().text();
     const created = await provision.json() as { account: { id: string; address: string }; channel: { id: string }; webhookSecret: string; contentStored: boolean };
-    expect(created).toMatchObject({ account: { status: "active", address: expect.stringMatching(/^agent-[a-f0-9]+@mail\.example\.net$/) }, channel: { id: expect.stringMatching(/^chn_/) }, webhookSecret: expect.any(String), contentStored: false });
+    expect(created).toMatchObject({ account: { status: "active", address: expect.stringMatching(/^agent-[a-f0-9]+@mail\.example\.net$/) }, channel: { id: expect.stringMatching(/^chn_/) }, webhookSecret: expect.stringMatching(/^whsec_/), contentStored: false });
+    // The tenant key was created once through the internal HMAC route; it is sealed in D1 and never appears in a response or plaintext column.
+    expect(naelao.tenantCreates).toHaveLength(1);
+    expect(naelao.tenantCreates[0]).toMatchObject({ tenant: "agentport-tenant-a", body: { scopes: ["inboxes:read", "inboxes:write", "messages:send", "webhooks:write"] } });
+    expect(await verifyInternalToken(naelao.tenantCreates[0]!.token, "agentport-tenant-a", secret)).toBe(true);
+    const sealedKey = db.prepare("SELECT * FROM agentport_naelao_email_tenants WHERE tenant_id='tenant-a'").get() as Record<string, string>;
+    expect(sealedKey.key_ciphertext).toBeTruthy();
+    expect(JSON.stringify(sealedKey)).not.toContain(naelao.apiKey);
+    expect(provisionText).not.toContain(naelao.apiKey);
+    expect(JSON.stringify(db.prepare("SELECT * FROM agentport_email_accounts").all())).not.toContain(naelao.apiKey);
+    // The inbox and an inbox-scoped webhook for the owner's URL were created with the tenant's bearer key.
+    const inboxCall = naelao.requests.find(r => r.method === "POST" && r.path === "/v1/inboxes")!;
+    expect(inboxCall.auth).toBe(`Bearer ${naelao.apiKey}`);
+    expect(inboxCall.idempotencyKey).toMatch(/^ap-[a-f0-9]{64}$/);
+    const hookCall = naelao.requests.find(r => r.path === "/v1/webhooks")!;
+    expect(hookCall.body).toEqual({ url: "https://hooks.builder.com/mail", event_types: ["email.message.received"], inbox_id: naelao.inboxes[0]!.id });
+    const row = db.prepare("SELECT nemail_inbox_id,nemail_webhook_id,webhook_secret_ciphertext FROM agentport_email_accounts WHERE account_id=?").get(created.account.id) as Record<string, string>;
+    expect(row).toMatchObject({ nemail_inbox_id: naelao.inboxes[0]!.id, nemail_webhook_id: expect.stringMatching(/^whk_/) });
+    expect(row.webhook_secret_ciphertext).not.toContain(created.webhookSecret);
     const repeatedProvision = await call("/email/accounts", "POST", { agentId: agent.id, inboundWebhookUrl: "https://hooks.builder.com/mail", idempotencyKey: "provision-1" });
     expect(repeatedProvision.status).toBe(200);
     expect(await repeatedProvision.json()).toMatchObject({ webhookSecret: created.webhookSecret, idempotent: true });
+    expect(naelao.inboxes).toHaveLength(1);
     const emailSubscription = await call("/events/subscriptions", "POST", { agentId: agent.id, serviceId: "ap_email:tenant-a", accountId: created.account.id, eventType: "message.received", deliveryMode: "poll", consumerGroup: "naelao-wakeup" });
     expect(emailSubscription.status).toBe(201);
     const sendBody = { agentId: agent.id, to: "customer@example.org", subject: "A private subject", text: "Do not persist this body", idempotencyKey: "send-1" };
     const firstSend = await call(`/email/accounts/${created.account.id}/send`, "POST", sendBody);
     expect(firstSend.status).toBe(202);
-    expect(await firstSend.json()).toMatchObject({ send: { status: "sent", providerMessageId: "provider-send-1" }, contentStored: false });
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(send).toHaveBeenCalledWith({ from: created.account.address, to: sendBody.to, subject: sendBody.subject, text: sendBody.text });
+    expect(await firstSend.json()).toMatchObject({ send: { status: "sent", providerMessageId: "msg_1" }, contentStored: false });
+    expect(naelao.sends).toHaveLength(1);
+    expect(naelao.sends[0]).toMatchObject({ inboxId: naelao.inboxes[0]!.id, body: { to: [sendBody.to], subject: sendBody.subject, text: sendBody.text } });
     expect((await call(`/email/accounts/${created.account.id}/send`, "POST", sendBody)).status).toBe(200);
-    expect(send).toHaveBeenCalledTimes(1);
+    expect(naelao.sends).toHaveLength(1);
     const sendColumns = db.prepare("PRAGMA table_info(agentport_email_sends)").all() as Array<{ name: string }>;
     expect(sendColumns.map(column => column.name)).not.toEqual(expect.arrayContaining(["to", "subject", "text", "body", "attachments"]));
-    const raw = new TextEncoder().encode("From: sender@example.org\r\nSubject: private inbound\r\n\r\nprivate body");
-    const message = { from: "sender@example.org", to: created.account.address, rawSize: raw.byteLength, raw: new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(raw); controller.close(); } }), headers: new Headers({ "message-id": "provider-inbound-1" }), setReject: vi.fn() } as unknown as ForwardableEmailMessage;
-    await handleAgentPortEmail(message, { PLATFORM_DB: platformDb as never, AGENTPORT_JWT_SECRET: signingSecret, EMAIL_INGRESS_DOMAIN: "mail.example.net", EMAIL_PROVISIONING_ENABLED: "true", fetch });
-    expect(fetch).toHaveBeenCalledTimes(2);
-    const callback = fetch.mock.calls[1]![1] as RequestInit;
-    expect(callback.headers).toMatchObject({ "content-type": "message/rfc822", "x-agentport-account-id": created.account.id, "x-agentport-event-id": "provider-inbound-1" });
-    expect(new TextDecoder().decode(callback.body as Uint8Array)).toBe(new TextDecoder().decode(raw));
-    expect(message.setReject).not.toHaveBeenCalled();
-    expect(db.prepare("SELECT COUNT(*) AS count FROM agentport_channels WHERE account_id=? AND status='active'").get(created.account.id)).toMatchObject({ count: 1 });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM agentport_channel_message_refs WHERE channel_id=? AND provider_message_id='provider-inbound-1'").get(created.channel.id)).toMatchObject({ count: 1 });
-    expect(db.prepare("SELECT event_type,payload_ref FROM agentport_events WHERE account_id=? AND provider_event_id='provider-inbound-1'").get(created.account.id)).toMatchObject({ event_type: "message.received", payload_ref: "provider-inbound-1" });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM agentport_event_deliveries WHERE agent_id=?").get(agent.id)).toMatchObject({ count: 1 });
+    expect(naelao.tenantCreates).toHaveLength(1);
     for (let index = 0; index < 9; index++) {
       const fakeId = `quota_acct_${index}`; const at = new Date().toISOString();
       db.prepare(`INSERT INTO agentport_accounts(id,tenant_id,service_id,account_model,owner_type,owner_id,metadata_json,status,created_at,updated_at)
@@ -543,11 +552,98 @@ describe("AgentPort internal registry API", () => {
     expect((await call("/email/accounts", "POST", { agentId: agent.id, inboundWebhookUrl: "https://hooks.builder.com/mail", idempotencyKey: "provision-over-limit" })).status).toBe(429);
     const revoked = await call(`/email/accounts/${created.account.id}/revoke`, "POST", {});
     expect(await revoked.json()).toMatchObject({ revoked: true });
-    const rejectedMessage = { ...message, raw: new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(raw); controller.close(); } }), setReject: vi.fn() } as unknown as ForwardableEmailMessage;
-    await handleAgentPortEmail(rejectedMessage, { PLATFORM_DB: platformDb as never, AGENTPORT_JWT_SECRET: signingSecret, EMAIL_INGRESS_DOMAIN: "mail.example.net", EMAIL_PROVISIONING_ENABLED: "true", fetch });
-    expect(rejectedMessage.setReject).toHaveBeenCalledOnce();
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(naelao.requests.filter(r => r.method === "DELETE").map(r => r.path)).toEqual([`/v1/webhooks/${row.nemail_webhook_id}`, `/v1/inboxes/${row.nemail_inbox_id}`]);
     expect(db.prepare("SELECT status FROM agentport_accounts WHERE id=?").get(created.account.id)).toMatchObject({ status: "revoked" });
+    // A revoked mailbox can no longer send.
+    expect((await call(`/email/accounts/${created.account.id}/send`, "POST", { ...sendBody, idempotencyKey: "send-after-revoke" })).status).toBe(404);
+    expect(naelao.sends).toHaveLength(1);
+    db.close();
+  });
+
+  it("maps Naelao Email refusals to the unchanged AgentPort error codes and never retries an uncertain send", async () => {
+    const { db, platformDb } = fixture(); const secret = "test-platform-secret";
+    const headers = { "content-type": "application/json", "x-agentport-tenant-id": "tenant-a", "x-agentport-internal-token": await mintInternalToken(secret, "tenant-a"), "x-agentport-actor-role": "agentport_api", "x-agentport-owner-id": "owner-1", "x-agentport-owner-type": "individual" };
+    const naelao = fakeNaelaoEmail();
+    const env = { PLATFORM_SECRET: secret, AGENTPORT_JWT_SECRET: "agentport-test-signing-secret-which-is-long-enough-32", NAELAO_EMAIL: naelao.binding, EMAIL_PROVISIONING_ENABLED: "true", PLATFORM_DB: platformDb } as never;
+    const call = (path: string, method: string, body?: unknown) => agentPortRoutes.fetch(new Request(`https://agentport.test${path}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
+    const { agent } = await (await call("/agents", "POST", { principalId: "owner-1", principalType: "individual", createdBy: "owner-1", hostPlatform: "external" })).json() as { agent: { id: string } };
+    const provision = (key: string) => call("/email/accounts", "POST", { agentId: agent.id, inboundWebhookUrl: "https://hooks.builder.com/mail", idempotencyKey: key });
+    naelao.mode.inbox = { status: 404, body: { error_code: "not_found" } };
+    expect((await provision("p-off")).status).toBe(503);
+    expect(await (await provision("p-off")).json()).toMatchObject({ error_code: "email_provider_not_configured" });
+    naelao.mode.inbox = { status: 403, body: { error_code: "inbox_limit_reached" } };
+    expect(await (await provision("p-limit")).json()).toMatchObject({ error_code: "email_account_limit" });
+    naelao.mode.inbox = undefined;
+    // A webhook that Naelao Email refuses rolls the new inbox back; nothing is stored locally.
+    naelao.mode.webhook = { status: 400, body: { error_code: "invalid_webhook_url" } };
+    expect(await (await provision("p-hook")).json()).toMatchObject({ error_code: "email_account_provisioning_failed" });
+    expect(naelao.requests.filter(r => r.method === "DELETE").map(r => r.path)).toEqual([`/v1/inboxes/${naelao.inboxes[0]!.id}`]);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM agentport_email_accounts").get()).toEqual({ n: 0 });
+    naelao.mode.webhook = undefined;
+    const created = await (await provision("p-ok")).json() as { account: { id: string } };
+    const sendPath = `/email/accounts/${created.account.id}/send`;
+    const sendBody = (key: string) => ({ agentId: agent.id, to: "customer@example.org", subject: "Hi", text: "Body", idempotencyKey: key });
+    naelao.mode.send = { status: 429, body: { error_code: "rate_limit_exceeded" } };
+    expect((await call(sendPath, "POST", sendBody("s1"))).status).toBe(429);
+    naelao.mode.send = { status: 422, body: { error_code: "recipient_suppressed" } };
+    expect((await call(sendPath, "POST", sendBody("s2"))).status).toBe(400);
+    naelao.mode.send = { status: 409, body: { error_code: "inbox_unavailable" } };
+    expect((await call(sendPath, "POST", sendBody("s3"))).status).toBe(404);
+    // A pre-send refusal frees the claim: the same key can be used again.
+    expect(db.prepare("SELECT COUNT(*) AS n FROM agentport_email_sends").get()).toEqual({ n: 0 });
+    naelao.mode.send = { status: 201, body: { data: { message_id: "msg_x", status: "unknown" } } };
+    const uncertain = await call(sendPath, "POST", sendBody("s4"));
+    expect(uncertain.status).toBe(502);
+    expect(await uncertain.json()).toMatchObject({ error_code: "email_delivery_indeterminate" });
+    naelao.mode.send = undefined;
+    const sendsBefore = naelao.sends.length;
+    const replay = await call(sendPath, "POST", sendBody("s4"));
+    expect(replay.status).toBe(202);
+    expect(await replay.json()).toMatchObject({ send: { status: "indeterminate" }, idempotent: true });
+    expect(naelao.sends).toHaveLength(sendsBefore);
     db.close();
   });
 });
+
+/** A fake NAELAO_EMAIL service binding that speaks the slice of the Naelao Email API AgentPort uses. */
+function fakeNaelaoEmail() {
+  const apiKey = `nem_${"k".repeat(43)}`;
+  type Scripted = { status: number; body: unknown } | undefined;
+  const mode: { inbox?: Scripted; webhook?: Scripted; send?: Scripted } = {};
+  const requests: Array<{ method: string; path: string; auth: string | null; idempotencyKey: string | null; body: unknown }> = [];
+  const tenantCreates: Array<{ tenant: string; token: string; body: { scopes: string[] } }> = [];
+  const inboxes: Array<{ id: string; address: string }> = [];
+  const sends: Array<{ inboxId: string; body: unknown }> = [];
+  const replay = new Map<string, { status: number; body: unknown }>();
+  const res = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const binding = { fetch: async (input: Request) => {
+    const url = new URL(input.url); const raw = await input.text(); const body = raw ? JSON.parse(raw) : undefined;
+    const auth = input.headers.get("authorization"); const idem = input.headers.get("idempotency-key");
+    requests.push({ method: input.method, path: url.pathname, auth, idempotencyKey: idem, body });
+    if (url.pathname === "/internal/v1/tenants") {
+      if (tenantCreates.length) return res(409, { error_code: "tenant_exists" });
+      tenantCreates.push({ tenant: input.headers.get("x-naelao-tenant-id")!, token: input.headers.get("x-naelao-internal-token")!, body });
+      return res(201, { data: { tenant_id: input.headers.get("x-naelao-tenant-id"), api_key: apiKey, scopes: body.scopes } });
+    }
+    if (auth !== `Bearer ${apiKey}`) return res(401, { error_code: "unauthorized" });
+    if (url.pathname === "/v1/inboxes" && input.method === "POST") {
+      if (mode.inbox) return res(mode.inbox.status, mode.inbox.body);
+      const cached = idem ? replay.get(idem) : undefined; if (cached) return res(cached.status, cached.body);
+      const inbox = { id: `inb_${inboxes.length + 1}`, address: `${body.local_part}@mail.example.net` }; inboxes.push(inbox);
+      const out = { status: 201, body: { data: inbox } }; if (idem) replay.set(idem, out); return res(out.status, out.body);
+    }
+    if (url.pathname === "/v1/webhooks" && input.method === "POST") {
+      if (mode.webhook) return res(mode.webhook.status, mode.webhook.body);
+      return res(201, { data: { id: `whk_${requests.length}`, inbox_id: body.inbox_id, url: body.url, secret: `whsec_${"s".repeat(40)}` } });
+    }
+    const send = /^\/v1\/inboxes\/([^/]+)\/messages\/send$/.exec(url.pathname);
+    if (send && input.method === "POST") {
+      if (mode.send) return res(mode.send.status, mode.send.body);
+      sends.push({ inboxId: send[1]!, body });
+      return res(201, { data: { message_id: `msg_${sends.length}`, status: "sent" } });
+    }
+    if (input.method === "DELETE") return res(200, { data: { deleted: true } });
+    return res(404, { error_code: "not_found" });
+  } };
+  return { binding, mode, requests, tenantCreates, inboxes, sends, apiKey };
+}

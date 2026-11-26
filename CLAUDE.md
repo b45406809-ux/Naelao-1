@@ -2,10 +2,8 @@
 
 ## Current task
 
-Master implementation spec, **MS-35**: Naelao Email: AgentPort adapter, managed offering, retire duplicate code
-(V-spec P1, tasks MS-31..MS-35; MS-31 to MS-34 are done). V-spec P0 (MS-27..MS-30) is complete locally; owner approved all
-OD-1..OD-8 recommendations. Follow [the master spec](docs/operations/master-implementation-spec.md)
-and [V-spec](new%20plan/V-spec.md). Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
+V-spec P0 and P1 are complete locally (MS-27..MS-35). Next is V-spec P2 (Commerce: subscriptions, quotes per policy,
+reconciliation, spending-limit composition) — tasks to be written into the master spec. Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume
 

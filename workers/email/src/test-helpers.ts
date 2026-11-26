@@ -6,7 +6,7 @@ import app, { type Env } from "./index.js";
 import { generateApiKey, keyPrefix, sha256Hex } from "./keys.js";
 
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
-const MIGRATIONS = ["0294_naelao_email_core.sql", "0295_naelao_email_inbound.sql", "0296_naelao_email_outbound.sql", "0297_naelao_email_webhooks.sql"];
+const MIGRATIONS = ["0294_naelao_email_core.sql", "0295_naelao_email_inbound.sql", "0296_naelao_email_outbound.sql", "0297_naelao_email_webhooks.sql", "0298_naelao_email_webhook_inbox_scope.sql"];
 export const SECRET = "s".repeat(32);
 export const WEBHOOK_KEY = "w".repeat(40);
 export const ALL_SCOPES = ["inboxes:read", "inboxes:write", "messages:read", "messages:send", "usage:read", "webhooks:write"];

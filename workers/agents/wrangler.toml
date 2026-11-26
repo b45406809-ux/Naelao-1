@@ -316,6 +316,11 @@ service = "naelao-agents"
 binding = "AGENTPORT_WORKER"
 service = "agentport-api"
 
+# MS-35: Naelao Email provider adapter (providers/naelao-email.ts), behind MANAGED_OFFERINGS_ENABLED.
+[[services]]
+binding = "NAELAO_EMAIL"
+service = "naelao-email"
+
 [[services]]
 binding = "NOTIFICATIONS_WORKER"
 service = "naelao-notifications"
@@ -765,6 +770,10 @@ binding = "AGENTPORT_WORKER"
 service = "agentport-api-staging"
 
 [[env.staging.services]]
+binding = "NAELAO_EMAIL"
+service = "naelao-email-staging"
+
+[[env.staging.services]]
 binding = "SANDBOXES_WORKER"
 service = "naelao-sandboxes-staging"
 
@@ -1056,6 +1065,10 @@ service = "naelao-agents-production"
 [[env.production.services]]
 binding = "AGENTPORT_WORKER"
 service = "agentport-api-production"
+
+[[env.production.services]]
+binding = "NAELAO_EMAIL"
+service = "naelao-email-production"
 
 [[env.production.services]]
 binding = "SANDBOXES_WORKER"

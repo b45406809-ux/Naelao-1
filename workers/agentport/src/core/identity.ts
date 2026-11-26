@@ -15,6 +15,24 @@ async function sealingKey(secret: string, agentId: string) {
   return crypto.subtle.deriveKey({ name: "HKDF", hash: "SHA-256", salt: encoder.encode("agentport-agent-signing-key-seal-v1"), info: encoder.encode(agentId) }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
 }
 
+async function secretSealingKey(secret: string, purpose: string, context: string) {
+  const material = await crypto.subtle.importKey("raw", encoder.encode(secret), "HKDF", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({ name: "HKDF", hash: "SHA-256", salt: encoder.encode("agentport-secret-seal-v1"), info: encoder.encode(`${purpose}\n${context}`) }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+
+/** Seals a short secret (a provider API key, a webhook signing secret) under AGENTPORT_JWT_SECRET, bound to `purpose` and `context`. */
+export async function sealSecret(secret: string, purpose: string, context: string, plaintext: string) {
+  if (secret.length < 32) throw new Error("agentport_identity_seal_secret_too_short");
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: encoder.encode(`${purpose}\n${context}`) }, await secretSealingKey(secret, purpose, context), encoder.encode(plaintext));
+  return { ciphertext: b64url(new Uint8Array(ciphertext)), iv: b64url(iv) };
+}
+
+export async function openSealedSecret(secret: string, purpose: string, context: string, sealed: { ciphertext: string; iv: string }) {
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64url(sealed.iv), additionalData: encoder.encode(`${purpose}\n${context}`) }, await secretSealingKey(secret, purpose, context), unb64url(sealed.ciphertext));
+  return decoder.decode(plain);
+}
+
 export async function createSealedAgentKey(secret: string, agentId: string, issuer: string) {
   if (secret.length < 32) throw new Error("agentport_identity_seal_secret_too_short");
   const pair = await crypto.subtle.generateKey(ED25519, true, ["sign", "verify"]) as CryptoKeyPair;

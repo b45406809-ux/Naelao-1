@@ -2,7 +2,7 @@ import { Hono, type Context } from "hono";
 import { mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { signJwt, verifyJwt } from "@naelao/auth";
 import { agentPortRoutes } from "./core/routes.js";
-import { handleAgentPortEmail } from "./email.js";
+import { deleteNaelaoEmailMailbox } from "./naelao-email.js";
 import { deliverEventNotifications } from "./notifications.js";
 import { buildLinkedOrgStatements, orgLinkEnabled } from "./org-link.js";
 
@@ -12,9 +12,7 @@ interface Env {
   AGENTPORT_JWT_SECRET: string;
   ENVIRONMENT: string;
   AGENTPORT_ISSUER?: string;
-  EMAIL: SendEmail;
-  EMAIL_INGRESS_DOMAIN?: string;
-  EMAIL_SENDING_DOMAIN?: string;
+  NAELAO_EMAIL?: Fetcher;
   EMAIL_PROVISIONING_ENABLED?: string;
   AGENTPORT_ORG_LINK_ENABLED?: string;
 }
@@ -423,6 +421,10 @@ app.delete("/v1/keys/:keyId", async c => {
 });
 app.delete("/v1/account", async c => {
   const auth = c.get("auth"); const tenantId = auth.tenantId;
+  // Retire the tenant's Naelao Email inboxes and webhooks while its sealed key still exists (best-effort; the key row is deleted below).
+  const mailboxes = await c.env.PLATFORM_DB.prepare("SELECT nemail_inbox_id,nemail_webhook_id FROM agentport_email_accounts WHERE tenant_id=? AND nemail_inbox_id IS NOT NULL")
+    .bind(tenantId).all<{ nemail_inbox_id: string; nemail_webhook_id: string | null }>();
+  for (const mailbox of mailboxes.results ?? []) await deleteNaelaoEmailMailbox(c.env, tenantId, { inboxId: mailbox.nemail_inbox_id, webhookId: mailbox.nemail_webhook_id });
   await c.env.PLATFORM_DB.batch([
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_activity_leases WHERE tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_event_deliveries WHERE tenant_id=?").bind(tenantId),
@@ -430,6 +432,7 @@ app.delete("/v1/account", async c => {
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_account_grants WHERE tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_email_sends WHERE tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_email_accounts WHERE tenant_id=?").bind(tenantId),
+    c.env.PLATFORM_DB.prepare("DELETE FROM agentport_naelao_email_tenants WHERE tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_usage_records WHERE tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_capability_handles WHERE tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_apps WHERE tenant_id=?").bind(tenantId),
@@ -621,7 +624,6 @@ app.get("/mcp", c => c.json({ error_code: "method_not_allowed", message: "MCP St
 
 app.notFound(c => c.json({ error_code: "not_found" }, 404));
 const handler = Object.assign(app, {
-  email: (message: ForwardableEmailMessage, env: Env) => handleAgentPortEmail(message, env),
   scheduled: (_controller: ScheduledController, env: Env, ctx: ExecutionContext) => ctx.waitUntil(deliverEventNotifications(env)),
 });
 export default handler;

@@ -91,6 +91,30 @@ describe("webhook dispatch (MS-34)", () => {
     expect(f.db.prepare("SELECT dispatched_at IS NOT NULL AS done FROM nemail_events").get()).toEqual({ done: 1 });
   });
 
+  it("an inbox-scoped webhook receives only its own inbox's events; an unknown or foreign inbox is not found", async () => {
+    const f = fixture();
+    const key = await seedTenant(f, "t1");
+    const other = await seedTenant(f, "t2");
+    const a = await createInbox(f, key, "bot-a");
+    const b = await createInbox(f, key, "bot-b");
+    const foreign = await createInbox(f, other, "bot-c");
+    const scoped = await call(f, "POST", "/v1/webhooks", key, { url: "https://a.partner.example/h", event_types: ["email.delivery.sent"], inbox_id: a });
+    expect(scoped.status).toBe(201);
+    expect(((await scoped.json()) as { data: { inbox_id: string } }).data.inbox_id).toBe(a);
+    await webhookWithSecret(f, key, "https://all.partner.example/h", ["email.delivery.sent"]);
+    expect((await call(f, "POST", "/v1/webhooks", key, { url: "https://x.partner.example/h", event_types: ["email.delivery.sent"], inbox_id: foreign })).status).toBe(404);
+    expect((await call(f, "POST", "/v1/webhooks", key, { url: "https://x.partner.example/h", event_types: ["email.delivery.sent"], inbox_id: "inb_missing" })).status).toBe(404);
+    await sendOne(f, key, a);
+    await sendOne(f, key, b);
+    const fake = fakeFetch();
+    await dispatchDue(f.env, { now: at(0), fetchImpl: fake.impl });
+    const toScoped = fake.calls.filter(c => c.url === "https://a.partner.example/h");
+    const toAll = fake.calls.filter(c => c.url === "https://all.partner.example/h");
+    expect(toScoped).toHaveLength(1);
+    expect((JSON.parse(toScoped[0]!.body) as { inbox_id: string }).inbox_id).toBe(a);
+    expect(toAll).toHaveLength(2);
+  });
+
   it("retries on the backoff schedule and dead-letters after the 24 h window (8 attempts)", async () => {
     const f = fixture();
     const key = await seedTenant(f, "t1");

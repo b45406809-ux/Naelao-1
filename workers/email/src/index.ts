@@ -184,12 +184,12 @@ app.delete("/v1/inboxes/:id", requireScope("inboxes:write"), async c => {
 });
 
 // ---- Webhooks (MS-34). The signing secret is returned once and never stored in plaintext or the replay table. ----
-interface WebhookRow { id: string; url: string; event_types_json: string; status: string; created_at: string }
-const webhookJson = (r: WebhookRow) => ({ id: r.id, url: r.url, event_types: JSON.parse(r.event_types_json) as string[], status: r.status, created_at: r.created_at });
+interface WebhookRow { id: string; url: string; event_types_json: string; status: string; created_at: string; inbox_id: string | null }
+const webhookJson = (r: WebhookRow) => ({ id: r.id, inbox_id: r.inbox_id, url: r.url, event_types: JSON.parse(r.event_types_json) as string[], status: r.status, created_at: r.created_at });
 
 // Not idempotent by design: a replayed response would have to contain the one-time secret, which must not be stored.
 app.post("/v1/webhooks", requireScope("webhooks:write"), async c => {
-  const body = await c.req.json<{ url?: unknown; event_types?: unknown }>().catch(() => null);
+  const body = await c.req.json<{ url?: unknown; event_types?: unknown; inbox_id?: unknown }>().catch(() => null);
   if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error_code: "invalid_request", message: "Invalid webhook request." }, 400);
   const dest = checkWebhookUrl(body.url);
   if (!dest.ok) return c.json({ error_code: "invalid_webhook_url", message: `Webhook URL refused: ${dest.reason}.` }, 400);
@@ -199,12 +199,20 @@ app.post("/v1/webhooks", requireScope("webhooks:write"), async c => {
   }
   if (!webhookKeyUsable(c.env.NEMAIL_WEBHOOK_KEY)) return c.json({ error_code: "offering_unavailable", message: "Webhook signing is not configured." }, 503);
   const tenantId = c.get("auth").tenantId;
+  // Optional inbox scope. Another tenant's or a deleted inbox is indistinguishable from an unknown one.
+  let inboxId: string | null = null;
+  if (body.inbox_id !== undefined && body.inbox_id !== null) {
+    if (typeof body.inbox_id !== "string" || !body.inbox_id) return c.json({ error_code: "invalid_request", message: "Invalid inbox_id." }, 400);
+    const inbox = await c.env.PLATFORM_DB.prepare("SELECT id FROM nemail_inboxes WHERE id=? AND nemail_tenant_id=? AND status != 'deleted'").bind(body.inbox_id, tenantId).first();
+    if (!inbox) return c.json(notFound, 404);
+    inboxId = body.inbox_id;
+  }
   const id = `whk_${crypto.randomUUID()}`;
   const secret = generateWebhookSecret();
   const ciphertext = await encryptSecret(c.env.NEMAIL_WEBHOOK_KEY, secret, webhookAad(tenantId, id));
-  await c.env.PLATFORM_DB.prepare("INSERT INTO nemail_webhooks(id,nemail_tenant_id,url,event_types_json,secret_ciphertext) VALUES(?,?,?,?,?)")
-    .bind(id, tenantId, dest.href, JSON.stringify(types), ciphertext).run();
-  const row = await c.env.PLATFORM_DB.prepare("SELECT id,url,event_types_json,status,created_at FROM nemail_webhooks WHERE id=? AND nemail_tenant_id=?").bind(id, tenantId).first<WebhookRow>();
+  await c.env.PLATFORM_DB.prepare("INSERT INTO nemail_webhooks(id,nemail_tenant_id,url,event_types_json,secret_ciphertext,inbox_id) VALUES(?,?,?,?,?,?)")
+    .bind(id, tenantId, dest.href, JSON.stringify(types), ciphertext, inboxId).run();
+  const row = await c.env.PLATFORM_DB.prepare("SELECT id,url,event_types_json,status,created_at,inbox_id FROM nemail_webhooks WHERE id=? AND nemail_tenant_id=?").bind(id, tenantId).first<WebhookRow>();
   return c.json({ data: { ...webhookJson(row!), secret } }, 201, { "cache-control": "no-store" });
 });
 

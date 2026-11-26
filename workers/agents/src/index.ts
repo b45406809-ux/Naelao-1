@@ -570,6 +570,8 @@ export interface AgentsEnv extends Cloudflare.Env {
   /** §A1.27: already bound in wrangler.toml (naelao-billing); added here so the context-usage
    *  endpoint can read the day/week/month llm_tokens summary. */
   BILLING_WORKER?: Fetcher;
+  /** MS-35: Naelao Email service binding (providers/naelao-email.ts); used only behind MANAGED_OFFERINGS_ENABLED. */
+  NAELAO_EMAIL?: Fetcher;
   /** Tier 2/3 follow-up — the daily digest email. The service binding already exists in
    *  wrangler.toml (NaelaoAgentDO's own env type declares it for approval-request emails) but was
    *  never surfaced on the top-level Worker's env type until this pass needed it directly. */

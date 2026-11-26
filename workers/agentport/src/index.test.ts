@@ -21,12 +21,10 @@ function env(scopes: string[] = ["agentport:read"]) {
 }
 
 describe("standalone AgentPort API", () => {
-  it("exports the Cloudflare inbound email handler for managed mailbox routing", async () => {
-    expect(typeof app.email).toBe("function");
-    const bindings = env();
-    const message = { to: "agent@mail.example.net", rawSize: 0, raw: new ReadableStream<Uint8Array>({ start(controller) { controller.close(); } }), headers: new Headers(), setReject: vi.fn() } as unknown as ForwardableEmailMessage;
-    await app.email(message, bindings as never);
-    expect(message.setReject).toHaveBeenCalledWith(expect.any(String));
+  it("has no inbound email handler: mailbox routing and ingress belong to Naelao Email (MS-35)", () => {
+    expect((app as unknown as { email?: unknown }).email).toBeUndefined();
+    expect(typeof app.scheduled).toBe("function");
+    expect(typeof app.fetch).toBe("function");
   });
   it("rejects absent and malformed bearer credentials", async () => {
     const bindings = env();

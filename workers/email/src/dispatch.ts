@@ -49,8 +49,8 @@ export async function fanOut(db: D1Database, nowIso: string, batch: number): Pro
   for (const ev of events.results) {
     // Only webhooks that existed when the event was recorded are eligible; a deleted webhook is never selected.
     const hooks = await db.prepare(
-      "SELECT id, event_types_json FROM nemail_webhooks WHERE nemail_tenant_id = ? AND status = 'active' AND deleted_at IS NULL AND created_at <= ?"
-    ).bind(ev.nemail_tenant_id, ev.created_at).all<WebhookRow>();
+      "SELECT id, event_types_json FROM nemail_webhooks WHERE nemail_tenant_id = ? AND status = 'active' AND deleted_at IS NULL AND created_at <= ? AND (inbox_id IS NULL OR inbox_id = ?)"
+    ).bind(ev.nemail_tenant_id, ev.created_at, ev.inbox_id).all<WebhookRow>();
     const stmts: D1PreparedStatement[] = [];
     for (const hook of hooks.results) {
       let types: unknown[] = [];

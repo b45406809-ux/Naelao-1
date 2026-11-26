@@ -1,15 +1,15 @@
 import { Hono, type Context } from "hono";
 import { readBoundedRequestText, verifyInternalToken } from "@naelao/http";
 import { accountModelRequiresParent, inspectDependencyGraph, leaseExpiry, validateServiceRegistration, type AccountModel, type AccountDependency, type DependencyType } from "./core.js";
-import { createSealedAgentKey, signAgentCredential } from "./identity.js";
+import { createSealedAgentKey, openSealedSecret, sealSecret, signAgentCredential } from "./identity.js";
 import { parseThreadSessionBinding, type ThreadSessionBinding } from "./thread-session-binding.js";
-import { deriveEmailWebhookSecret, normalizedEmailDomain, validEmailAddress, validInboundWebhookUrl } from "../email.js";
+import { validEmailAddress, validInboundWebhookUrl } from "../email.js";
+import { WEBHOOK_SECRET_PURPOSE, deleteNaelaoEmailMailbox, naelaoEmailRequest, nemailIdempotencyKey, type NaelaoEmailResult } from "../naelao-email.js";
 import { eventWebhookSecret } from "../notifications.js";
 
 interface AgentPortEnv {
   PLATFORM_DB: D1Database; PLATFORM_SECRET: string; AGENTPORT_JWT_SECRET?: string; AGENTPORT_ISSUER?: string;
-  EMAIL?: SendEmail;
-  EMAIL_SENDING_DOMAIN?: string; EMAIL_INGRESS_DOMAIN?: string;
+  NAELAO_EMAIL?: Fetcher;
   EMAIL_PROVISIONING_ENABLED?: string;
 }
 const routes = new Hono<{ Bindings: AgentPortEnv; Variables: { tenantId: string } }>();
@@ -314,16 +314,17 @@ routes.post("/accounts/:accountId/reactivate", async c => {
   return row?.status==="active"?c.json({active:true,reactivated:false,accountId}):c.json({error_code:"account_not_reactivatable"},409);
 });
 
+const EMAIL_NOT_CONFIGURED = { error_code: "email_provider_not_configured", message: "Configure AgentPort's Naelao Email service binding and enable Naelao Email." } as const;
+const emailEnabled = (env: AgentPortEnv) => env.EMAIL_PROVISIONING_ENABLED === "true" && !!env.NAELAO_EMAIL && !!env.AGENTPORT_JWT_SECRET;
+const bodyData = (result: NaelaoEmailResult | null) => (result?.body?.data ?? null) as Record<string, unknown> | null;
+
 routes.post("/email/accounts", async c => {
   const body = await c.req.json<{ agentId?: string; inboundWebhookUrl?: string; idempotencyKey?: string }>().catch(() => null);
   if (!body?.agentId || !body.inboundWebhookUrl || !validInboundWebhookUrl(body.inboundWebhookUrl) ||
       !body.idempotencyKey || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.idempotencyKey)) return c.json({ error_code: "invalid_email_account" }, 400);
   const tenantId = c.get("tenantId"); const db = c.env.PLATFORM_DB;
-  const ingressDomain = normalizedEmailDomain(c.env.EMAIL_INGRESS_DOMAIN);
-  const sendingDomain = normalizedEmailDomain(c.env.EMAIL_SENDING_DOMAIN);
-  if (c.env.EMAIL_PROVISIONING_ENABLED !== "true" || !c.env.EMAIL || !c.env.AGENTPORT_JWT_SECRET || !ingressDomain || !sendingDomain || ingressDomain !== sendingDomain) {
-    return c.json({ error_code: "email_provider_not_configured", message: "Configure AgentPort's Cloudflare Email Service binding, sending domain, receiving domain, and inbound Worker route." }, 503);
-  }
+  if (!emailEnabled(c.env)) return c.json(EMAIL_NOT_CONFIGURED, 503);
+  const jwtSecret = c.env.AGENTPORT_JWT_SECRET!;
   if (c.req.header("x-agentport-actor-role") === "agent") return c.json({ error_code: "owner_authorization_required" }, 403);
   const ownerId = c.req.header("x-agentport-owner-id"); const ownerType = c.req.header("x-agentport-owner-type");
   const agent = await db.prepare(`SELECT a.id,p.external_id,p.principal_type FROM agentport_agents a
@@ -333,23 +334,51 @@ routes.post("/email/accounts", async c => {
   if (!agent || agent.external_id !== ownerId || agent.principal_type !== ownerType || !["individual", "organization"].includes(agent.principal_type)) {
     return c.json({ error_code: "agent_unavailable" }, 404);
   }
-  const existing = await db.prepare(`SELECT e.account_id,e.agent_id,e.address,e.status FROM agentport_email_accounts e WHERE e.tenant_id=? AND e.idempotency_key=?`)
-    .bind(tenantId, body.idempotencyKey).first<{ account_id: string; agent_id: string; address: string; status: string }>();
+  const existing = await db.prepare(`SELECT e.account_id,e.agent_id,e.address,e.status,e.webhook_secret_ciphertext,e.webhook_secret_iv FROM agentport_email_accounts e WHERE e.tenant_id=? AND e.idempotency_key=?`)
+    .bind(tenantId, body.idempotencyKey).first<{ account_id: string; agent_id: string; address: string; status: string; webhook_secret_ciphertext: string | null; webhook_secret_iv: string | null }>();
   if (existing) {
     if (existing.agent_id !== body.agentId) return c.json({ error_code: "idempotency_conflict" }, 409);
     const channel = await db.prepare("SELECT id FROM agentport_channels WHERE tenant_id=? AND account_id=? AND status='active' LIMIT 1")
       .bind(tenantId, existing.account_id).first<{ id: string }>();
+    let webhookSecret: string | undefined;
+    if (existing.webhook_secret_ciphertext && existing.webhook_secret_iv) {
+      try { webhookSecret = await openSealedSecret(jwtSecret, WEBHOOK_SECRET_PURPOSE, existing.account_id, { ciphertext: existing.webhook_secret_ciphertext, iv: existing.webhook_secret_iv }); } catch { /* sealed under a different secret */ }
+    }
     return c.json({ account: { id: existing.account_id, address: existing.address, agentId: body.agentId, status: existing.status },
       serviceId: `ap_email:${tenantId}`, channel: channel ? { id: channel.id, provider: "email", address: existing.address } : null,
-      webhookSecret: await deriveEmailWebhookSecret(c.env.AGENTPORT_JWT_SECRET, tenantId, existing.account_id), idempotent: true });
+      webhookSecret, idempotent: true });
   }
   const activeMailboxes = await db.prepare("SELECT COUNT(*) AS count FROM agentport_email_accounts WHERE tenant_id=? AND status='active'")
     .bind(tenantId).first<{ count: number }>();
   if ((activeMailboxes?.count ?? 0) >= 10) return c.json({ error_code: "email_account_limit" }, 429);
   const serviceId = `ap_email:${tenantId}`; const at = stamp(); const accountId = id("acct");
-  const localPart = `agent-${[...crypto.getRandomValues(new Uint8Array(12))].map(byte => byte.toString(16).padStart(2, "0")).join("")}`;
-  const address = `${localPart}@${ingressDomain}`;
+
+  // 1. The inbox in Naelao Email. The local part and Idempotency-Key are derived from (tenant, idempotencyKey), so a retry after a
+  //    crash between here and the local insert replays the same inbox instead of creating a second one.
+  const derived = await nemailIdempotencyKey(tenantId, "inbox", body.idempotencyKey);
+  let inbox: NaelaoEmailResult | null;
   try {
+    inbox = await naelaoEmailRequest(c.env, tenantId, "POST", "/v1/inboxes", { body: { local_part: `agent-${derived.slice(3, 27)}` }, idempotencyKey: derived });
+  } catch { return c.json({ error_code: "email_account_provisioning_failed" }, 503); }
+  if (!inbox) return c.json({ error_code: "email_account_provisioning_failed" }, 503);
+  if (inbox.status === 403 && inbox.body?.error_code === "inbox_limit_reached") return c.json({ error_code: "email_account_limit" }, 429);
+  if (inbox.status === 404 || (inbox.status === 503 && inbox.body?.error_code === "offering_unavailable")) return c.json(EMAIL_NOT_CONFIGURED, 503);
+  const inboxData = bodyData(inbox);
+  if (![200, 201].includes(inbox.status) || typeof inboxData?.id !== "string" || typeof inboxData.address !== "string") return c.json({ error_code: "email_account_provisioning_failed" }, 503);
+  const inboxId = inboxData.id; const address = inboxData.address.toLowerCase();
+
+  // 2. An inbox-scoped webhook to the owner's URL. Naelao Email signs each event (Naelao-Signature) with the returned secret.
+  let webhookId: string | null = null, webhookSecret: string | null = null;
+  try {
+    const hook = await naelaoEmailRequest(c.env, tenantId, "POST", "/v1/webhooks", { body: { url: body.inboundWebhookUrl, event_types: ["email.message.received"], inbox_id: inboxId } });
+    const hookData = bodyData(hook);
+    if (hook?.status === 201 && typeof hookData?.id === "string" && typeof hookData.secret === "string") { webhookId = hookData.id; webhookSecret = hookData.secret; }
+  } catch { /* handled below */ }
+  const undo = () => deleteNaelaoEmailMailbox(c.env, tenantId, { inboxId, webhookId });
+  if (!webhookId || !webhookSecret) { await undo(); return c.json({ error_code: "email_account_provisioning_failed" }, 503); }
+
+  try {
+    const sealed = await sealSecret(jwtSecret, WEBHOOK_SECRET_PURPOSE, accountId, webhookSecret);
     await db.batch([
       db.prepare(`INSERT OR IGNORE INTO agentport_services(id,tenant_id,name,service_type,account_models_json,capabilities_json,events_json,billing_json,connection_purpose,partnership_status,status,created_at,updated_at)
         VALUES(?,?,'AgentPort Email','managed','["agent_native"]','["channels","email.send","email.receive","messages.read","messages.send"]','["message.received"]','{"model":"usage"}','agent_resource','approved','active',?,?)`).bind(serviceId, tenantId, at, at),
@@ -358,22 +387,22 @@ routes.post("/email/accounts", async c => {
     ]);
     await db.batch([
       db.prepare(`INSERT INTO agentport_accounts(id,tenant_id,service_id,account_model,owner_type,owner_id,external_account_id,metadata_json,status,created_at,updated_at)
-        VALUES(?,?,?,'agent_native',?,?,?,'{"provisioner":"agentport-email"}','active',?,?)`)
+        VALUES(?,?,?,'agent_native',?,?,?,'{"provisioner":"naelao-email"}','active',?,?)`)
         .bind(accountId, tenantId, serviceId, agent.principal_type, agent.external_id, address, at, at),
       db.prepare(`INSERT INTO agentport_channels(id,tenant_id,service_id,account_id,provider_channel_id,display_name,created_at,updated_at)
         VALUES(?,?,?,?,?,?,?,?)`).bind(id("chn"), tenantId, serviceId, accountId, address, address, at, at),
-      db.prepare(`INSERT INTO agentport_email_accounts(account_id,tenant_id,agent_id,address,inbound_webhook_url,idempotency_key,created_at,updated_at)
-        VALUES(?,?,?,?,?,?,?,?)`).bind(accountId, tenantId, body.agentId, address, body.inboundWebhookUrl, body.idempotencyKey, at, at),
+      db.prepare(`INSERT INTO agentport_email_accounts(account_id,tenant_id,agent_id,address,inbound_webhook_url,idempotency_key,created_at,updated_at,nemail_inbox_id,nemail_webhook_id,webhook_secret_ciphertext,webhook_secret_iv)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).bind(accountId, tenantId, body.agentId, address, body.inboundWebhookUrl, body.idempotencyKey, at, at, inboxId, webhookId, sealed.ciphertext, sealed.iv),
       db.prepare(`INSERT INTO agentport_account_grants(id,tenant_id,account_id,agent_id,granted_by,permissions_json,created_at,updated_at)
         VALUES(?,?,?,?,?,'["email.send","email.receive"]',?,?)`).bind(id("grt"), tenantId, accountId, body.agentId, ownerId, at, at),
     ]);
-  } catch { return c.json({ error_code: "email_account_provisioning_failed" }, 503); }
+  } catch { await undo(); return c.json({ error_code: "email_account_provisioning_failed" }, 503); }
   const createdChannel = await db.prepare("SELECT id FROM agentport_channels WHERE tenant_id=? AND service_id=? AND account_id=? AND status='active' LIMIT 1")
     .bind(tenantId, serviceId, accountId).first<{ id: string }>();
   return c.json({ account: { id: accountId, address, agentId: body.agentId, status: "active", permissions: ["email.send", "email.receive", "messages.read", "messages.send"] },
     serviceId,
     channel: createdChannel ? { id: createdChannel.id, provider: "email", address } : null,
-    webhookSecret: await deriveEmailWebhookSecret(c.env.AGENTPORT_JWT_SECRET, tenantId, accountId), contentStored: false }, 201);
+    webhookSecret, contentStored: false }, 201);
 });
 
 routes.post("/email/accounts/:accountId/send", async c => {
@@ -384,23 +413,23 @@ routes.post("/email/accounts/:accountId/send", async c => {
   const tenantId = c.get("tenantId"); const db = c.env.PLATFORM_DB; const accountId = c.req.param("accountId");
   const ownerId = c.req.header("x-agentport-owner-id"); const ownerType = c.req.header("x-agentport-owner-type");
   if (c.req.header("x-agentport-actor-role") === "agent") return c.json({ error_code: "owner_authorization_required" }, 403);
-  if (c.env.EMAIL_PROVISIONING_ENABLED !== "true" || !c.env.EMAIL || !normalizedEmailDomain(c.env.EMAIL_SENDING_DOMAIN)) return c.json({ error_code: "email_provider_not_configured" }, 503);
-  const mailbox = await db.prepare(`SELECT e.agent_id,e.address,e.status AS mailbox_status,a.status AS account_status,g.status AS agent_status,
+  if (!emailEnabled(c.env)) return c.json({ error_code: "email_provider_not_configured" }, 503);
+  const mailbox = await db.prepare(`SELECT e.agent_id,e.address,e.nemail_inbox_id,e.status AS mailbox_status,a.status AS account_status,g.status AS agent_status,
       p.external_id,p.principal_type
     FROM agentport_email_accounts e JOIN agentport_accounts a ON a.id=e.account_id AND a.tenant_id=e.tenant_id
     JOIN agentport_agents g ON g.id=e.agent_id AND g.tenant_id=e.tenant_id
     JOIN agentport_principals p ON p.id=g.principal_id AND p.tenant_id=g.tenant_id
     WHERE e.account_id=? AND e.tenant_id=?`).bind(accountId, tenantId)
-    .first<{ agent_id: string; address: string; mailbox_status: string; account_status: string; agent_status: string; external_id: string; principal_type: string }>();
+    .first<{ agent_id: string; address: string; nemail_inbox_id: string | null; mailbox_status: string; account_status: string; agent_status: string; external_id: string; principal_type: string }>();
   if (!mailbox || mailbox.external_id !== ownerId || mailbox.principal_type !== ownerType) return c.json({ error_code: "email_account_unavailable" }, 404);
-  if (mailbox.mailbox_status !== "active" || mailbox.account_status !== "active" || mailbox.agent_status !== "active" || body.agentId !== mailbox.agent_id) return c.json({ error_code: "email_account_unavailable" }, 404);
-  if (!mailbox.address.endsWith(`@${normalizedEmailDomain(c.env.EMAIL_SENDING_DOMAIN)}`)) return c.json({ error_code: "email_sender_domain_unavailable" }, 503);
+  if (mailbox.mailbox_status !== "active" || mailbox.account_status !== "active" || mailbox.agent_status !== "active" || body.agentId !== mailbox.agent_id || !mailbox.nemail_inbox_id) return c.json({ error_code: "email_account_unavailable" }, 404);
   const grant = await db.prepare(`SELECT permissions_json FROM agentport_account_grants WHERE tenant_id=? AND account_id=? AND agent_id=? AND status='active' AND (expires_at IS NULL OR expires_at>?)`)
     .bind(tenantId, accountId, body.agentId, stamp()).first<{ permissions_json: string }>();
   if (!grant || !(JSON.parse(grant.permissions_json) as string[]).includes("email.send")) return c.json({ error_code: "email_send_not_granted" }, 403);
   const previous = await db.prepare("SELECT id,status,provider_message_id FROM agentport_email_sends WHERE tenant_id=? AND account_id=? AND idempotency_key=?")
     .bind(tenantId, accountId, body.idempotencyKey).first<{ id: string; status: string; provider_message_id: string | null }>();
   if (previous) return c.json({ send: { id: previous.id, status: previous.status, providerMessageId: previous.provider_message_id }, idempotent: true }, previous.status === "sent" ? 200 : 202);
+  // AgentPort's own per-mailbox limit stays in force (Release 1 default plan limit, MR-EM-8); Naelao Email applies its tenant limits on top.
   const usage = await db.prepare("SELECT COUNT(*) AS count FROM agentport_email_sends WHERE account_id=? AND created_at>=?")
     .bind(accountId, new Date(Date.now() - 24 * 60 * 60_000).toISOString()).first<{ count: number }>();
   if ((usage?.count ?? 0) >= 50) return c.json({ error_code: "email_daily_limit" }, 429);
@@ -409,26 +438,41 @@ routes.post("/email/accounts/:accountId/send", async c => {
     await db.prepare(`INSERT INTO agentport_email_sends(id,tenant_id,account_id,agent_id,idempotency_key,status,created_at,updated_at)
       VALUES(?,?,?,?,?,'sending',?,?)`).bind(sendId, tenantId, accountId, body.agentId, body.idempotencyKey, at, at).run();
   } catch { return c.json({ error_code: "email_send_already_started" }, 409); }
+  let result: NaelaoEmailResult | null = null;
   try {
-    const result = await c.env.EMAIL.send({ from: mailbox.address, to: body.to, subject: body.subject.trim(), text: body.text });
+    result = await naelaoEmailRequest(c.env, tenantId, "POST", `/v1/inboxes/${encodeURIComponent(mailbox.nemail_inbox_id)}/messages/send`, {
+      body: { to: [body.to], subject: body.subject.trim(), text: body.text },
+      idempotencyKey: await nemailIdempotencyKey(tenantId, "send", accountId, body.idempotencyKey),
+    });
+  } catch { result = null; }
+  const data = bodyData(result);
+  if (result?.status === 201 && data?.status === "sent" && typeof data.message_id === "string") {
     await db.prepare("UPDATE agentport_email_sends SET status='sent',provider_message_id=?,updated_at=? WHERE id=? AND tenant_id=?")
-      .bind(result.messageId, stamp(), sendId, tenantId).run();
-    return c.json({ send: { id: sendId, status: "sent", providerMessageId: result.messageId }, contentStored: false }, 202);
-  } catch {
-    await db.prepare("UPDATE agentport_email_sends SET status='indeterminate',updated_at=? WHERE id=? AND tenant_id=?")
-      .bind(stamp(), sendId, tenantId).run();
-    return c.json({ error_code: "email_delivery_indeterminate", send: { id: sendId, status: "indeterminate" }, message: "Check provider delivery status before retrying with a new idempotency key." }, 502);
+      .bind(data.message_id, stamp(), sendId, tenantId).run();
+    return c.json({ send: { id: sendId, status: "sent", providerMessageId: data.message_id }, contentStored: false }, 202);
   }
+  // Definite pre-send refusals (Naelao Email did nothing and keeps the key reusable): free the claim and map the code.
+  const refusal = result && [400, 403, 404, 409, 422, 429].includes(result.status) && result.body?.error_code !== "idempotency_in_progress" ? result : null;
+  if (refusal) {
+    await db.prepare("DELETE FROM agentport_email_sends WHERE id=? AND tenant_id=? AND status='sending'").bind(sendId, tenantId).run();
+    if (refusal.status === 429) return c.json({ error_code: "email_daily_limit" }, 429);
+    if (refusal.status === 400 || refusal.status === 422) return c.json({ error_code: "invalid_email_message" }, 400);
+    return c.json({ error_code: "email_account_unavailable" }, 404);
+  }
+  // Anything else (transport failure, 5xx, partial or unknown outcome, send_failed) is not resolved here: never retried automatically.
+  await db.prepare("UPDATE agentport_email_sends SET status='indeterminate',updated_at=? WHERE id=? AND tenant_id=?")
+    .bind(stamp(), sendId, tenantId).run();
+  return c.json({ error_code: "email_delivery_indeterminate", send: { id: sendId, status: "indeterminate" }, message: "Check provider delivery status before retrying with a new idempotency key." }, 502);
 });
 
 routes.post("/email/accounts/:accountId/revoke", async c => {
   if (c.req.header("x-agentport-actor-role") === "agent") return c.json({ error_code: "owner_authorization_required" }, 403);
   const tenantId = c.get("tenantId"); const db = c.env.PLATFORM_DB; const accountId = c.req.param("accountId");
   const ownerId = c.req.header("x-agentport-owner-id"); const ownerType = c.req.header("x-agentport-owner-type");
-  const mailbox = await db.prepare(`SELECT p.external_id,p.principal_type FROM agentport_email_accounts e
+  const mailbox = await db.prepare(`SELECT p.external_id,p.principal_type,e.nemail_inbox_id,e.nemail_webhook_id FROM agentport_email_accounts e
     JOIN agentport_agents g ON g.id=e.agent_id AND g.tenant_id=e.tenant_id
     JOIN agentport_principals p ON p.id=g.principal_id AND p.tenant_id=g.tenant_id
-    WHERE e.account_id=? AND e.tenant_id=?`).bind(accountId, tenantId).first<{ external_id: string; principal_type: string }>();
+    WHERE e.account_id=? AND e.tenant_id=?`).bind(accountId, tenantId).first<{ external_id: string; principal_type: string; nemail_inbox_id: string | null; nemail_webhook_id: string | null }>();
   if (!mailbox || mailbox.external_id !== ownerId || mailbox.principal_type !== ownerType) return c.json({ error_code: "email_account_unavailable" }, 404);
   const at = stamp();
   await db.batch([
@@ -436,6 +480,8 @@ routes.post("/email/accounts/:accountId/revoke", async c => {
     db.prepare("UPDATE agentport_accounts SET status='revoked',updated_at=? WHERE id=? AND tenant_id=? AND status='active'").bind(at, accountId, tenantId),
     db.prepare("UPDATE agentport_account_grants SET status='revoked',updated_at=? WHERE account_id=? AND tenant_id=? AND status='active'").bind(at, accountId, tenantId),
   ]);
+  // The local revoke above is authoritative. Retiring the inbox and webhook in Naelao Email is best-effort and repeats on a repeated revoke.
+  await deleteNaelaoEmailMailbox(c.env, tenantId, { inboxId: mailbox.nemail_inbox_id, webhookId: mailbox.nemail_webhook_id });
   return c.json({ revoked: true, contentStored: false });
 });
 
