@@ -3,6 +3,7 @@
 import * as React from "react";
 import { Button, FormInput } from "@naelao/ui";
 import { assistantMailApi, type ManagedServiceDashboard, type SessionCredentials } from "@/lib/api";
+import { ManagedResourcesSection } from "@/components/ManagedResourcesSection";
 import { normalizeManagedServiceAttachment } from "@/lib/managed-service-attachments";
 
 function title(value: string) {
@@ -524,6 +525,7 @@ export function ManagedServicesPanel({ spaceId, session }: { spaceId: string; se
         <>
           {notice && <p role="status">{notice}</p>}
           <p>Current plan: <strong>{title(dashboard.planTier)}</strong>. Credit totals use the last 30 days.</p>
+          <ManagedResourcesSection spaceId={spaceId} session={session} />
           <div className="settings-block">
             <div className="settings-row-label">Choose an AgentMail connection</div>
             <p className="settings-row-sub">Your own inbox stays attached to your AgentMail account. A managed mailbox is a separate assistant address billed against this organization&apos;s credits.</p>

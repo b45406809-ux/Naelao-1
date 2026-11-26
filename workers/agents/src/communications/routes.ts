@@ -16,6 +16,7 @@ import { FindingsError, acknowledgeFinding, listFindings } from "./managed-recon
 import { ManagedOfferingAdminError, approveCommercialAgreement, revokeCommercialAgreement, upsertCommercialAgreement, upsertManagedServiceOffering } from "./managed-offering-admin.js";
 import { disableManagedServiceCapability, verifyManagedServiceCapability } from "./managed-service-capabilities.js";
 import { getManagedServiceDashboard } from "./managed-service-dashboard.js";
+import { listManagedResources, managedResourcesPanelEnabled } from "./managed-resources.js";
 import { acknowledgeManagedServiceCostBudgetAlert, setManagedServiceCostBudget } from "./managed-service-cost-budgets.js";
 import { createManagedModelQuote, runManagedModelOperation } from "./managed-models.js";
 import { discoverUserPortAgentPortConnector, revokeUserPortAgentPortConnector, revokeUserPortAgentPortOwnerLink, syncUserPortAgentPortConnector } from "./userport-agentport-sync.js";
@@ -240,6 +241,17 @@ async function handle(c: C, agent: boolean) {
     }
   }
   const preferences = await channelPreferences(c.env, scope);
+  if(action==="managed-resources"){
+    // MS-42: every failure (flag off, wrong method, not owner/admin) answers the same not-found shape (MR-SEC-2).
+    const notFound=()=>c.json({error_code:"not_found"},404);
+    if(!managedResourcesPanelEnabled(c.env)||c.req.method!=="GET")return notFound();
+    const membership=await c.env.PLATFORM_DB.prepare("SELECT role FROM space_members WHERE space_id=? AND end_user_id=? AND suspended_at IS NULL")
+      .bind(scope.spaceId,scope.userId).first<{role:string}>();
+    const effectiveRole=scope.role==="product_end_user"?membership?.role:scope.role;
+    if(!["owner","admin"].includes(effectiveRole??""))return notFound();
+    try{return c.json(await listManagedResources(c.env,scope));}
+    catch{return c.json({error_code:"managed_resources_unavailable"},503);}
+  }
   if(action==="managed-service-dashboard"){
     if(c.req.method!=="GET")return c.json({error_code:"method_not_allowed"},405);
     if(scope.projectId){
