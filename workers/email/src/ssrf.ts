@@ -1,7 +1,9 @@
 // Destination guard for outbound webhooks. Local copy: @naelao/security (packages/security) would need a new
 // workspace dependency in this worker's lockfile importer, which MS-34 does not allow. It is a literal-host
-// check only (no DNS resolution, which a Worker cannot do without a DoH round trip). Used at create time and
-// before every delivery attempt.
+// check (checkWebhookUrl) plus, since MS-48, a DNS-over-HTTPS resolution check (resolveDestination) that refuses
+// hostnames whose A/AAAA answers are private. Both are used at create time and before every delivery attempt.
+// The resolution is advisory against DNS rebinding (the runtime resolves again when it connects); it closes the
+// "public name pointing at a private address" gap. The DoH fetch is injectable and never reached by tests.
 
 const RESERVED_SUFFIXES = [".localhost", ".local", ".internal", ".localdomain", ".home.arpa"];
 const IPV4_RE = /^(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})$/;
@@ -97,4 +99,40 @@ export function checkWebhookUrl(raw: unknown): WebhookUrlCheck {
   if (url.port !== "") return { ok: false, reason: "only the default https port is allowed" };
   if (isPrivateHost(url.hostname)) return { ok: false, reason: "the destination host is not allowed" };
   return { ok: true, href: url.href };
+}
+
+export const DOH_ENDPOINT = "https://cloudflare-dns.com/dns-query";
+const DOH_TIMEOUT_MS = 3_000;
+const DOH_MAX_BYTES = 16 * 1024;
+
+/** public: every answer is a public address. private: some answer is private (never contact). unknown: no usable answer. */
+export type DestinationResolution = "public" | "private" | "unknown";
+
+async function dohLookup(host: string, type: "A" | "AAAA", dohFetch: typeof fetch): Promise<string[] | null> {
+  try {
+    const res = await dohFetch(`${DOH_ENDPOINT}?name=${encodeURIComponent(host)}&type=${type}`, {
+      headers: { accept: "application/dns-json" }, redirect: "manual", signal: AbortSignal.timeout(DOH_TIMEOUT_MS),
+    });
+    if (!res.ok) { await res.body?.cancel().catch(() => {}); return null; }
+    const text = await res.text();
+    if (text.length > DOH_MAX_BYTES) return null;
+    const json = JSON.parse(text) as { Status?: unknown; Answer?: Array<{ type?: unknown; data?: unknown }> };
+    if (json.Status !== 0 && json.Status !== 3) return null; // NOERROR or NXDOMAIN; anything else (SERVFAIL...) is unusable
+    const want = type === "A" ? 1 : 28;
+    return (json.Answer ?? []).filter(a => a.type === want && typeof a.data === "string").map(a => a.data as string);
+  } catch { return null; }
+}
+
+/** Resolves a webhook hostname through DoH (A and AAAA, CNAME chains arrive flattened) and classifies the answers. */
+export async function resolveDestination(hostname: string, dohFetch: typeof fetch = fetch): Promise<DestinationResolution> {
+  let host = hostname.trim().toLowerCase();
+  if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
+  host = host.replace(/\.$/, "");
+  if (isPrivateHost(host)) return "private";
+  if (host.includes(":") || ipv4Octets(host)) return "public"; // a public literal needs no lookup
+  const [a, aaaa] = await Promise.all([dohLookup(host, "A", dohFetch), dohLookup(host, "AAAA", dohFetch)]);
+  const answers = [...(a ?? []), ...(aaaa ?? [])];
+  if (answers.some(isPrivateHost)) return "private";
+  if (a === null || aaaa === null || answers.length === 0) return "unknown";
+  return "public";
 }

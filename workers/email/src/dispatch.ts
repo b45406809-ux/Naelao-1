@@ -9,7 +9,7 @@
 //
 // Delivery is at-least-once: a crash after a successful POST but before the outcome is written causes one repeat. The
 // envelope id (also sent as Naelao-Event-Id) lets receivers deduplicate.
-import { checkWebhookUrl } from "./ssrf.js";
+import { checkWebhookUrl, resolveDestination } from "./ssrf.js";
 import { decryptSecret, signPayload, webhookAad, webhookKeyUsable, SIGNATURE_HEADER } from "./webhooks.js";
 
 export const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000, 2 * 3_600_000, 6 * 3_600_000] as const;
@@ -24,7 +24,7 @@ export function retryDelayMs(attemptsMade: number): number {
   return RETRY_DELAYS_MS[Math.min(Math.max(attemptsMade, 1) - 1, RETRY_DELAYS_MS.length - 1)]!;
 }
 
-export interface DispatchEnv { PLATFORM_DB: D1Database; NEMAIL_WEBHOOK_KEY?: string }
+export interface DispatchEnv { PLATFORM_DB: D1Database; NEMAIL_WEBHOOK_KEY?: string; /** Test injection for the DoH lookup; production uses the global fetch. */ DOH_FETCH?: typeof fetch }
 export interface DispatchOptions { now?: Date; fetchImpl?: typeof fetch; eventBatch?: number; deliveryBatch?: number }
 export interface DispatchResult { fannedOut: number; attempted: number }
 
@@ -111,8 +111,13 @@ async function attemptOne(env: DispatchEnv, d: DueRow, nowIso: string, fetchImpl
   const timestamp = Math.floor(now / 1000);
   const signature = await signPayload(secret, timestamp, body);
 
+  // MS-48 item 4: a public-looking name that resolves to a private address is never contacted.
+  const resolution = await resolveDestination(new URL(dest.href).hostname, env.DOH_FETCH ?? fetch);
+  if (resolution === "private") return finish(db, d.id, "dead_letter", nowIso, "destination_refused");
+
   let statusCode: number | null = null, errorCode: string | null = null;
-  try {
+  if (resolution === "unknown") errorCode = "dns_unavailable"; // fail closed: no POST, retried on the normal schedule
+  else try {
     const res = await fetchImpl(dest.href, {
       method: "POST",
       redirect: "manual",

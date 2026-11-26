@@ -3,7 +3,7 @@ import { verifyInternalToken } from "@naelao/http";
 import { handleInbound } from "./inbound.js";
 import { parseFields, performSend } from "./send.js";
 import { SCOPES, authenticate, generateApiKey, isScope, keyPrefix, sha256Hex, type AuthContext, type Scope } from "./keys.js";
-import { checkWebhookUrl } from "./ssrf.js";
+import { checkWebhookUrl, resolveDestination } from "./ssrf.js";
 import { dispatchDue } from "./dispatch.js";
 import { WEBHOOK_EVENT_TYPES, encryptSecret, generateWebhookSecret, isWebhookEventType, webhookAad, webhookKeyUsable } from "./webhooks.js";
 
@@ -19,6 +19,8 @@ export interface Env {
   NAELAO_EMAIL_BOUNCE_ADDRESS?: string;
   /** Worker secret (>= 32 chars). Derives the AES-256-GCM key that encrypts webhook signing secrets at rest. */
   NEMAIL_WEBHOOK_KEY?: string;
+  /** Test injection for the DoH lookup of webhook destinations (MS-48); production uses the global fetch. */
+  DOH_FETCH?: typeof fetch;
 }
 type AppContext = Context<{ Bindings: Env; Variables: { auth: AuthContext } }>;
 
@@ -267,6 +269,9 @@ app.post("/v1/webhooks", requireScope("webhooks:write"), async c => {
   if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error_code: "invalid_request", message: "Invalid webhook request." }, 400);
   const dest = checkWebhookUrl(body.url);
   if (!dest.ok) return c.json({ error_code: "invalid_webhook_url", message: `Webhook URL refused: ${dest.reason}.` }, 400);
+  const resolution = await resolveDestination(new URL(dest.href).hostname, c.env.DOH_FETCH ?? fetch);
+  if (resolution === "private") return c.json({ error_code: "invalid_webhook_url", message: "Webhook URL refused: the destination host resolves to a private address." }, 400);
+  if (resolution === "unknown") return c.json({ error_code: "destination_unverifiable", message: "The webhook destination could not be verified. Try again." }, 503);
   const types = body.event_types;
   if (!Array.isArray(types) || types.length < 1 || types.length > WEBHOOK_EVENT_TYPES.length || !types.every(isWebhookEventType) || new Set(types).size !== types.length) {
     return c.json({ error_code: "invalid_request", message: `event_types must be a non-empty, duplicate-free subset of: ${WEBHOOK_EVENT_TYPES.join(", ")}.` }, 400);

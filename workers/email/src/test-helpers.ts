@@ -11,6 +11,16 @@ export const SECRET = "s".repeat(32);
 export const WEBHOOK_KEY = "w".repeat(40);
 export const ALL_SCOPES = ["inboxes:read", "inboxes:write", "messages:read", "messages:send", "usage:read", "webhooks:write"];
 
+/** Default DoH double: every name resolves to one public address. Tests never reach the network. */
+export function publicDoh(answers: { A?: string[]; AAAA?: string[]; fail?: boolean } = { A: ["93.184.216.34"] }): typeof fetch {
+  return (async (input: RequestInfo | URL) => {
+    if (answers.fail) throw new Error("doh_down");
+    const type = new URL(String(input)).searchParams.get("type") as "A" | "AAAA";
+    const list = answers[type] ?? [];
+    return Response.json({ Status: 0, Answer: list.map(data => ({ type: type === "A" ? 1 : 28, data })) });
+  }) as typeof fetch;
+}
+
 export interface SentMail { from: string; to: string; raw: string }
 export interface Fixture {
   db: InstanceType<typeof DatabaseSync>;
@@ -48,7 +58,7 @@ export function fixture(over: Partial<Env> = {}): Fixture {
   } as unknown as SendEmail;
   const r2 = new Map<string, unknown>();
   const NEMAIL_R2 = { put: async (k: string, v: unknown) => { r2.set(k, v); }, get: async (k: string) => r2.get(k) ?? null, delete: async (k: string) => { r2.delete(k); } } as unknown as R2Bucket;
-  const env: Env = { PLATFORM_DB, NEMAIL_R2, EMAIL, PLATFORM_SECRET: SECRET, NEMAIL_WEBHOOK_KEY: WEBHOOK_KEY, NAELAO_EMAIL_ENABLED: "true", NAELAO_EMAIL_DOMAINS: "mail.naelao.test", ...over };
+  const env: Env = { PLATFORM_DB, NEMAIL_R2, EMAIL, PLATFORM_SECRET: SECRET, NEMAIL_WEBHOOK_KEY: WEBHOOK_KEY, NAELAO_EMAIL_ENABLED: "true", NAELAO_EMAIL_DOMAINS: "mail.naelao.test", DOH_FETCH: publicDoh(), ...over };
   return { db, env, sent, emailMode };
 }
 
