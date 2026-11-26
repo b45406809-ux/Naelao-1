@@ -150,7 +150,7 @@ import { handleChannelSessionQueue, type ChannelSessionQueueMessage, type Provid
 import { stableChannelSessionId as createStableChannelSessionId } from "./channels/channel-session-id.js";
 import { providerEventRuntimeAgentId } from "./channels/agentport-event-subscription.js";
 import { dispatchAgentPortProviderEvent } from "./channels/agentport-provider-event-dispatch.js";
-import { agentGrantIsActive, deadLetterProviderEvent, metaProviderEventAdapter, providerEventModuleEnabled } from "./communications/provider-events/index.js";
+import { agentGrantIsActive, deadLetterProviderEvent, ingestProviderEvent, metaProviderEventAdapter, providerEventModuleEnabled } from "./communications/provider-events/index.js";
 import { readSidecarRuntimeExecutionProfile, saveSidecarRuntimeExecutionProfile } from "./workspace/sidecar-runtime-execution-profile.js";
 import { readBoundedRequestText, readBoundedResponseText } from "./shared/bounded-response-text.js";
 import { handleSandboxWorkspaceBridge, reconcilePendingWorkspacePublications, sweepExpiredWorkspaceBlobs } from "./sandboxes/workspace-bridge.js";
@@ -8399,8 +8399,9 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
 
   const headers: Record<string, string> = {};
   c.req.raw.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
-  const valid = (await Promise.all(secrets.map(secret => adapter.verifySignature({ rawBody, headers, secret })))).some(Boolean);
-  if (!valid) return c.json({ error_code: "invalid_signature" }, 401);
+  const verdicts = await Promise.all(secrets.map(secret => adapter.verifySignature({ rawBody, headers, secret })));
+  const matchedSecret = secrets[verdicts.findIndex(Boolean)];
+  if (matchedSecret === undefined) return c.json({ error_code: "invalid_signature" }, 401);
 
   let parsed: Record<string, unknown> = {};
   try {
@@ -8459,10 +8460,14 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
     return c.json({ ok: true, skipped: link ? "channel_disabled" : "channel_not_configured" });
   }
 
+  // Everything from here on is the route's side-effecting work. With PROVIDER_EVENT_MODULE_ENABLED a WhatsApp (Meta) message first goes through
+  // ingestProviderEvent: verify, normalize, dedup claim, grant re-check, then this closure runs. Without it the closure runs directly.
+  const credentialsWorker = c.env.CREDENTIALS_WORKER!; // checked above
+  const proceed = async (): Promise<Response> => {
   let normalizedRaw = raw;
   if (channel === "whatsapp" && hasWhatsAppVoiceNote(raw)) {
     if (wakeContext.model.startsWith("local/")) return c.json({ error_code: "voice_transcription_not_available_for_selected_model" }, 422);
-    const mediaTokenResponse = await c.env.CREDENTIALS_WORKER.fetch(new Request(
+    const mediaTokenResponse = await credentialsWorker.fetch(new Request(
       `http://credentials/v1/internal/spaces/${spaceId}/credentials/WHATSAPP_MEDIA_ACCESS_TOKEN/plaintext`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-naelao-tenant-id": space.tenant_id, "x-naelao-credential-token": credToken },
@@ -8501,7 +8506,7 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
     const taskId = normalizedInbound.external_id;
     let files: Awaited<ReturnType<typeof downloadWhatsAppAttachments>>;
     if (channel === "whatsapp") {
-      const mediaTokenResponse = await c.env.CREDENTIALS_WORKER.fetch(new Request(
+      const mediaTokenResponse = await credentialsWorker.fetch(new Request(
         `http://credentials/v1/internal/spaces/${spaceId}/credentials/WHATSAPP_MEDIA_ACCESS_TOKEN/plaintext`, {
           method: "POST",
           headers: { "content-type": "application/json", "x-naelao-tenant-id": space.tenant_id, "x-naelao-credential-token": credToken },
@@ -8597,6 +8602,23 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
     console.error(`[channels] inbound forward failed channel=${channel} space=${spaceId}:`, (err as Error).message);
   }
   return c.json({ ok: true });
+  };
+  if (channel !== "whatsapp" || !providerEventModuleEnabled(c.env)) return proceed();
+  const gated = await ingestProviderEvent(c.env, metaProviderEventAdapter, {
+    rawBody, headers, secret: matchedSecret,
+    // The tenant is the Space that owns the verified per-channel URL and its enabled channel link.
+    resolveResource: async () => ({ resourceId: `channel_link:${spaceId}:whatsapp`, tenantId: space.tenant_id }),
+    grantActive: async () => !!await c.env.PLATFORM_DB.prepare("SELECT 1 AS ok FROM channel_links WHERE tenant_id=? AND space_id=? AND channel='whatsapp' AND enabled=1")
+      .bind(space.tenant_id, spaceId).first(),
+    deliver: async () => ({ response: await proceed() }),
+  });
+  if (gated.error) throw gated.error;
+  if (gated.outcome === "unauthorized") return c.json({ error_code: "invalid_signature" }, 401);
+  // A status callback or other non-message payload has nothing to dedup: the route handles it as it always did.
+  if (gated.outcome === "ignored") return proceed();
+  if (gated.outcome === "duplicate") return c.json({ ok: true });
+  if (gated.outcome === "grant_revoked") return c.json({ ok: true, skipped: "channel_disabled" });
+  return gated.response ?? c.json({ ok: true });
 });
 
 app.get("/channels/whatsapp/extensions", c => {
@@ -8634,44 +8656,60 @@ app.post("/channels/whatsapp/extensions", async c => {
       JOIN orgs o ON o.id=s.tenant_id AND o.status='active'
       WHERE c.provider='whatsapp' AND c.account_id=? AND c.status='active' AND s.status='active' LIMIT 2`)
       .bind(item.phoneNumberId).all<{ project_id: string; installation_id: string; connection_id: string; credential_name: string; handler_sha256: string | null; tenant_id: string; space_id: string }>();
-    if ((candidates.results ?? []).length !== 1) {
-      // MR-EVT-3 (PROVIDER_EVENT_MODULE_ENABLED): a verified Meta event for an unknown or ambiguous phone number is dead-lettered; the message is still skipped.
-      if (providerEventModuleEnabled(c.env)) {
-        const meta = await metaProviderEventAdapter.normalizeWebhook(JSON.stringify(item.payload));
-        await deadLetterProviderEvent(c.env.PLATFORM_DB, { provider: "meta", eventId: meta?.eventId ?? "unknown", eventType: meta?.eventType ?? "message.received",
-          resourceRef: String(item.phoneNumberId), reason: (candidates.results ?? []).length ? "ambiguous_resource" : "unknown_resource", rawBody: rawBody });
-      }
+    if ((candidates.results ?? []).length !== 1 && !providerEventModuleEnabled(c.env)) continue;
+    const unique = (candidates.results ?? []).length === 1;
+    const connection = unique ? candidates.results![0]! : null;
+    // The per-item work: true when the message was forwarded to the Agent DO, false when it was skipped (the response stays 200 either way).
+    const forward = async (connection: NonNullable<typeof candidates.results>[number]): Promise<boolean> => {
+      if (!connection.handler_sha256) return false;
+      const installation = await fetchInstalledConnectionContext(c.env, connection.tenant_id, connection.space_id, connection.project_id, connection.installation_id);
+      const declaration = installation?.manifest.bundle?.connections?.find(item => item.id === connection.connection_id);
+      const channel = installation?.manifest.channels?.find(item => item.kind === "channel" && item.provider === "whatsapp" && item.connectionId === connection.connection_id);
+      if (!installation || declaration?.provider !== "whatsapp" || !channel?.handlerScript || !c.env.SCRIPTS_R2) return false;
+      const artifact = await c.env.SCRIPTS_R2.get(`spaces/${connection.space_id}/extensions/${installation.manifest.bundle?.id}/${installation.manifest.bundle?.version}/${channel.handlerScript.replace(/^\.\//, "")}`);
+      if (!artifact || artifact.size > 262_144) return false;
+      const artifactHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", await artifact.arrayBuffer()))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+      if (artifactHash !== connection.handler_sha256) return false;
+      const adapter = getAdapter("whatsapp")!;
+      const normalized = adapter.normalizeInbound(item.payload);
+      if (!normalized) return false;
+      const wakeContext = await resolveWakeContext(c.env, connection.space_id, connection.tenant_id, "whatsapp");
+      if (wakeContext.airGappedOnly) return false;
+      const accessToken = await resolveConnectorCredential(c.env, connection.tenant_id, connection.space_id, connection.credential_name);
+      if (!accessToken) return false;
+      try {
+        const files = await downloadWhatsAppAttachments(item.payload as Parameters<typeof downloadWhatsAppAttachments>[0], { accessToken,
+          ...(c.env.WHATSAPP_GRAPH_API_VERSION ? { graphApiVersion: c.env.WHATSAPP_GRAPH_API_VERSION } : {}) });
+        if (files.length) await storeChannelAttachments({ db: c.env.PLATFORM_DB, bucket: c.env.SCRIPTS_R2, platformSecret: c.env.PLATFORM_SECRET,
+          tenantId: connection.tenant_id, spaceId: connection.space_id, taskId: normalized.external_id, channel: "whatsapp", files,
+          extensionScope: { projectId: connection.project_id, installationId: connection.installation_id, providerConnectionId: connection.connection_id } });
+      } catch { return false; }
+      const stub = await getAgentDOForSpace(c.env, connection.tenant_id, connection.space_id, "naelao-agent", c.get("requestId"));
+      await stub.fetch(new Request("http://agent-do/channels/whatsapp/inbound", { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ raw: item.payload, projectId: connection.project_id, extensionInstanceId: connection.installation_id, extensionScriptSha256: connection.handler_sha256,
+          providerConnectionId: connection.connection_id, taskId: normalized.external_id, spaceId: connection.space_id, tenantId: connection.tenant_id, model: wakeContext.model, apiKey: "" }) }));
+      return true;
+    };
+    if (!providerEventModuleEnabled(c.env)) {
+      if (connection && await forward(connection)) forwarded++;
       continue;
     }
-    const connection = candidates.results![0]!;
-    if (!connection.handler_sha256) continue;
-    const installation = await fetchInstalledConnectionContext(c.env, connection.tenant_id, connection.space_id, connection.project_id, connection.installation_id);
-    const declaration = installation?.manifest.bundle?.connections?.find(item => item.id === connection.connection_id);
-    const channel = installation?.manifest.channels?.find(item => item.kind === "channel" && item.provider === "whatsapp" && item.connectionId === connection.connection_id);
-    if (!installation || declaration?.provider !== "whatsapp" || !channel?.handlerScript || !c.env.SCRIPTS_R2) continue;
-    const artifact = await c.env.SCRIPTS_R2.get(`spaces/${connection.space_id}/extensions/${installation.manifest.bundle?.id}/${installation.manifest.bundle?.version}/${channel.handlerScript.replace(/^\.\//, "")}`);
-    if (!artifact || artifact.size > 262_144) continue;
-    const artifactHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", await artifact.arrayBuffer()))].map(byte => byte.toString(16).padStart(2, "0")).join("");
-    if (artifactHash !== connection.handler_sha256) continue;
-    const adapter = getAdapter("whatsapp")!;
-    const normalized = adapter.normalizeInbound(item.payload);
-    if (!normalized) continue;
-    const wakeContext = await resolveWakeContext(c.env, connection.space_id, connection.tenant_id, "whatsapp");
-    if (wakeContext.airGappedOnly) continue;
-    const accessToken = await resolveConnectorCredential(c.env, connection.tenant_id, connection.space_id, connection.credential_name);
-    if (!accessToken) continue;
-    try {
-      const files = await downloadWhatsAppAttachments(item.payload as Parameters<typeof downloadWhatsAppAttachments>[0], { accessToken,
-        ...(c.env.WHATSAPP_GRAPH_API_VERSION ? { graphApiVersion: c.env.WHATSAPP_GRAPH_API_VERSION } : {}) });
-      if (files.length) await storeChannelAttachments({ db: c.env.PLATFORM_DB, bucket: c.env.SCRIPTS_R2, platformSecret: c.env.PLATFORM_SECRET,
-        tenantId: connection.tenant_id, spaceId: connection.space_id, taskId: normalized.external_id, channel: "whatsapp", files,
-        extensionScope: { projectId: connection.project_id, installationId: connection.installation_id, providerConnectionId: connection.connection_id } });
-    } catch { continue; }
-    const stub = await getAgentDOForSpace(c.env, connection.tenant_id, connection.space_id, "naelao-agent", c.get("requestId"));
-    await stub.fetch(new Request("http://agent-do/channels/whatsapp/inbound", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ raw: item.payload, projectId: connection.project_id, extensionInstanceId: connection.installation_id, extensionScriptSha256: connection.handler_sha256,
-        providerConnectionId: connection.connection_id, taskId: normalized.external_id, spaceId: connection.space_id, tenantId: connection.tenant_id, model: wakeContext.model, apiKey: "" }) }));
-    forwarded++;
+    // MS-49: the shared Meta app webhook signs the whole body once (verified above with the module's verifier), then each message goes through
+    // ingestProviderEvent: normalize, tenant from the connection that owns the phone_number_id, dedup claim before the forward, grant re-check.
+    const gated = await ingestProviderEvent(c.env, metaProviderEventAdapter, {
+      rawBody: JSON.stringify(item.payload), headers, secret: c.env.WHATSAPP_APP_SECRET, alreadyVerified: true,
+      resolveResource: async () => connection ? { resourceId: `${connection.installation_id}:${connection.connection_id}`, tenantId: connection.tenant_id } : null,
+      grantActive: async (_envelope, resource) => !!await c.env.PLATFORM_DB.prepare(`SELECT 1 AS ok FROM extension_provider_connections
+        WHERE tenant_id=? AND installation_id||':'||connection_id=? AND provider='whatsapp' AND account_id=? AND status='active'`)
+        .bind(resource.tenantId, resource.resourceId, item.phoneNumberId).first(),
+      async deliver() {
+        if (!await forward(connection!)) return { release: true };
+        forwarded++;
+        return undefined;
+      },
+    });
+    if (gated.error) throw gated.error;
+    if (gated.outcome === "ignored" && connection && await forward(connection)) forwarded++;
   }
   return c.json({ ok: true, forwarded });
 });
