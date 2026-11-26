@@ -17,6 +17,7 @@ import { ManagedOfferingAdminError, approveCommercialAgreement, revokeCommercial
 import { disableManagedServiceCapability, verifyManagedServiceCapability } from "./managed-service-capabilities.js";
 import { getManagedServiceDashboard } from "./managed-service-dashboard.js";
 import { listManagedResources, managedResourcesPanelEnabled } from "./managed-resources.js";
+import { ResourceAddError, createResourceQuote, listResourceOptions, provisionManagedResource } from "./managed-resource-add.js";
 import { acknowledgeManagedServiceCostBudgetAlert, setManagedServiceCostBudget } from "./managed-service-cost-budgets.js";
 import { createManagedModelQuote, runManagedModelOperation } from "./managed-models.js";
 import { discoverUserPortAgentPortConnector, revokeUserPortAgentPortConnector, revokeUserPortAgentPortOwnerLink, syncUserPortAgentPortConnector } from "./userport-agentport-sync.js";
@@ -241,16 +242,37 @@ async function handle(c: C, agent: boolean) {
     }
   }
   const preferences = await channelPreferences(c.env, scope);
-  if(action==="managed-resources"){
-    // MS-42: every failure (flag off, wrong method, not owner/admin) answers the same not-found shape (MR-SEC-2).
+  if(action==="managed-resources"||action==="resource-options"||action==="resource-quote"||action==="resource-provision"){
+    // MS-42/MS-43: every failure (flag off, wrong method, not owner/admin) answers the same not-found shape (MR-SEC-2).
     const notFound=()=>c.json({error_code:"not_found"},404);
-    if(!managedResourcesPanelEnabled(c.env)||c.req.method!=="GET")return notFound();
+    const expectedMethod=action==="managed-resources"||action==="resource-options"?"GET":"POST";
+    if(!managedResourcesPanelEnabled(c.env)||c.req.method!==expectedMethod)return notFound();
     const membership=await c.env.PLATFORM_DB.prepare("SELECT role FROM space_members WHERE space_id=? AND end_user_id=? AND suspended_at IS NULL")
       .bind(scope.spaceId,scope.userId).first<{role:string}>();
     const effectiveRole=scope.role==="product_end_user"?membership?.role:scope.role;
     if(!["owner","admin"].includes(effectiveRole??""))return notFound();
-    try{return c.json(await listManagedResources(c.env,scope));}
-    catch{return c.json({error_code:"managed_resources_unavailable"},503);}
+    if(action==="managed-resources"){
+      try{return c.json(await listManagedResources(c.env,scope));}
+      catch{return c.json({error_code:"managed_resources_unavailable"},503);}
+    }
+    const param=(key:string)=>{const v=c.req.method==="GET"?c.req.query(key):body[key];return typeof v==="string"&&v?v:null;};
+    const mode=param("access_mode")??"managed";
+    const resourceType=param("resource_type");
+    if((mode!=="managed"&&mode!=="byok")||(action!=="resource-provision"&&!resourceType))return c.json({error_code:"bad_request"},400);
+    const fromError=(error:unknown)=>{
+      if(error instanceof ResourceAddError)return c.json({error_code:error.code},error.status as 400);
+      return c.json({error_code:"managed_resources_unavailable"},503);
+    };
+    try{
+      if(action==="resource-options")return c.json(await listResourceOptions(c.env,scope,{resourceType:resourceType!,accessMode:mode,region:param("region")}));
+      if(action==="resource-quote"){
+        const result=await createResourceQuote(c.env,scope,{resourceType:resourceType!,accessMode:mode,offeringId:param("offering_id"),region:param("region"),localPart:param("local_part"),displayName:param("display_name")});
+        return c.json(result);
+      }
+      const quoteId=param("quote_id"),offeringId=param("offering_id"),region=param("region");
+      if(!quoteId||!offeringId||!region)return c.json({error_code:"bad_request"},400);
+      return c.json(await provisionManagedResource(c.env,scope,{quoteId,offeringId,region,localPart:param("local_part"),displayName:param("display_name")}));
+    }catch(error){return fromError(error);}
   }
   if(action==="managed-service-dashboard"){
     if(c.req.method!=="GET")return c.json({error_code:"method_not_allowed"},405);

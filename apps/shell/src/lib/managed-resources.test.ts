@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseManagedResources, resourceModeLabel, resourceTitle } from "./managed-resources.js";
+import { describeComponent, parseManagedResources, parseResourceOptions, parseResourceQuote, resourceModeLabel, resourceTitle } from "./managed-resources.js";
 
 const good = { id: "r1", providerName: "AgentMail", status: "active", mode: "managed", displayName: "Support", category: "email", resourceType: "email_inbox",
   region: "us", projectId: null, assignedAgents: [{ agentId: "a1" }, { agentId: 3 }],
@@ -27,5 +27,28 @@ describe("managed resources parser", () => {
     expect(resourceModeLabel("byok")).toBe("Bring your own");
     expect(resourceTitle({ displayName: null, providerName: "AgentMail" })).toBe("AgentMail");
     expect(resourceTitle({ displayName: "Support", providerName: "AgentMail" })).toBe("Support (AgentMail)");
+  });
+});
+
+describe("add-resource parsers", () => {
+  const components = [{ kind: "setup", credits: 10 }, { kind: "rental", interval: "month", credits: 100 },
+    { kind: "usage", meter: "sends", included: 1000, unitQty: 1000, unitCredits: 5 }, { kind: "bogus" }];
+  it("parses options and the reason, dropping malformed rows and internal fields", () => {
+    const parsed = parseResourceOptions({ selectedOfferingId: "o1", reason: "Because", options: [
+      { offeringId: "o1", displayName: "Inbox", region: "us", recurring: true, components, minMonthlyCredits: 100, initialCredits: 110, strategy: "managed_master" },
+      { offeringId: "o2" }, null] });
+    expect(parsed.selectedOfferingId).toBe("o1");
+    expect(parsed.reason).toBe("Because");
+    expect(parsed.options).toHaveLength(1);
+    expect(parsed.options[0]!.components).toHaveLength(3);
+    expect(JSON.stringify(parsed)).not.toMatch(/managed_master/);
+    expect(parseResourceOptions(null)).toEqual({ options: [], selectedOfferingId: null, reason: "" });
+  });
+  it("parses a quote with every component and describes them", () => {
+    const quote = parseResourceQuote({ reason: "You chose it", quote: { quoteId: "msq_1", offeringId: "o1", region: "us", credits: 110, minMonthlyCredits: 100, components, expiresAt: "2026-11-26T12:15:00.000Z" } });
+    expect(quote).toMatchObject({ quoteId: "msq_1", credits: 110, minMonthlyCredits: 100 });
+    expect(quote!.components.map(describeComponent)).toEqual(["Setup: 10 credits, once", "Rental: 100 credits per month", "Usage (sends): first 1000 included, then 5 credits per 1000"]);
+    expect(parseResourceQuote({ quote: { quoteId: "x" } })).toBeNull();
+    expect(parseResourceQuote(undefined)).toBeNull();
   });
 });

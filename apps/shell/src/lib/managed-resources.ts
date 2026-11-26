@@ -55,3 +55,64 @@ export function resourceModeLabel(mode: ManagedResource["mode"]) {
 export function resourceTitle(resource: Pick<ManagedResource, "displayName" | "providerName">) {
   return resource.displayName ? `${resource.displayName} (${resource.providerName})` : resource.providerName;
 }
+
+// MS-43: parsers for the add-resource flow (`resource-options`, `resource-quote`, `resource-provision`).
+export type QuoteComponentView =
+  | { kind: "setup"; credits: number }
+  | { kind: "rental"; interval: "month" | "year"; credits: number }
+  | { kind: "usage" | "storage"; meter: string; included: number; unitQty: number; unitCredits: number };
+
+export type ResourceOptionView = {
+  offeringId: string; displayName: string; region: string; recurring: boolean;
+  components: QuoteComponentView[]; minMonthlyCredits: number; initialCredits: number;
+};
+export type ResourceOptionsView = { options: ResourceOptionView[]; selectedOfferingId: string | null; reason: string };
+export type ResourceQuoteView = {
+  quoteId: string; offeringId: string; region: string; credits: number; minMonthlyCredits: number;
+  components: QuoteComponentView[]; expiresAt: string; reason: string;
+};
+
+function parseComponents(value: unknown): QuoteComponentView[] {
+  if (!Array.isArray(value)) return [];
+  const out: QuoteComponentView[] = [];
+  for (const item of value) {
+    const c = rec(item);
+    if (!c) continue;
+    if (c.kind === "setup") out.push({ kind: "setup", credits: count(c.credits) });
+    else if (c.kind === "rental") out.push({ kind: "rental", interval: c.interval === "year" ? "year" : "month", credits: count(c.credits) });
+    else if ((c.kind === "usage" || c.kind === "storage") && str(c.meter)) {
+      out.push({ kind: c.kind, meter: str(c.meter)!, included: count(c.included), unitQty: Math.max(1, count(c.unitQty)), unitCredits: count(c.unitCredits) });
+    }
+  }
+  return out;
+}
+
+export function parseResourceOptions(value: unknown): ResourceOptionsView {
+  const root = rec(value);
+  const list = Array.isArray(root?.options) ? root.options : [];
+  const options: ResourceOptionView[] = [];
+  for (const item of list) {
+    const o = rec(item);
+    const offeringId = str(o?.offeringId), displayName = str(o?.displayName), region = str(o?.region);
+    if (!o || !offeringId || !displayName || !region) continue;
+    options.push({ offeringId, displayName, region, recurring: o.recurring === true, components: parseComponents(o.components),
+      minMonthlyCredits: count(o.minMonthlyCredits), initialCredits: count(o.initialCredits) });
+  }
+  return { options, selectedOfferingId: str(root?.selectedOfferingId), reason: str(root?.reason) ?? "" };
+}
+
+export function parseResourceQuote(value: unknown): ResourceQuoteView | null {
+  const root = rec(value), quote = rec(root?.quote);
+  const quoteId = str(quote?.quoteId), offeringId = str(quote?.offeringId), region = str(quote?.region), expiresAt = str(quote?.expiresAt);
+  if (!quote || !quoteId || !offeringId || !region || !expiresAt) return null;
+  return { quoteId, offeringId, region, credits: count(quote.credits), minMonthlyCredits: count(quote.minMonthlyCredits),
+    components: parseComponents(quote.components), expiresAt, reason: str(root?.reason) ?? "" };
+}
+
+export function describeComponent(component: QuoteComponentView): string {
+  switch (component.kind) {
+    case "setup": return `Setup: ${component.credits} credits, once`;
+    case "rental": return `Rental: ${component.credits} credits per ${component.interval}`;
+    default: return `${component.kind === "usage" ? "Usage" : "Storage"} (${component.meter}): first ${component.included} included, then ${component.unitCredits} credits per ${component.unitQty}`;
+  }
+}
