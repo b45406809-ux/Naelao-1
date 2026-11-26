@@ -25,6 +25,7 @@ function fixture() {
   db.exec(readFileSync(new URL("../../../../infra/migrations/0169_agentport_email_accounts.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../../../../infra/migrations/0171_agentport_event_notifications.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../../../../infra/migrations/0299_agentport_naelao_email_link.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../../../../infra/migrations/0307_agentport_outcome_receipts.sql", import.meta.url), "utf8"));
   const platformDb = { prepare(sql: string) {
     let values: unknown[] = [];
     const statement = {
@@ -143,6 +144,48 @@ describe("AgentPort internal registry API", () => {
     expect((await call(`/accounts/${account.id}/actions/authorize`, "POST", { ...action, idempotencyKey: "expired-action" })).status).toBe(403);
     await call(`/grants/${grantId}`, "DELETE");
     expect((await call(`/accounts/${account.id}/actions/authorize`, "POST", { ...action, idempotencyKey: "revoked-action" })).status).toBe(403);
+    db.close();
+  });
+
+  it("appends chained, idempotent outcome receipts for an authorized action (MS-45)", async () => {
+    const { db, platformDb } = fixture(); const secret = "test-platform-secret";
+    const headers = { "content-type": "application/json", "x-agentport-tenant-id": "tenant-a", "x-agentport-internal-token": await mintInternalToken(secret, "tenant-a"), "x-agentport-actor-role": "client_system" };
+    const env = { PLATFORM_SECRET: secret, PLATFORM_DB: platformDb } as never;
+    const call = (path: string, method: string, body?: unknown, extra: Record<string, string> = {}) => agentPortRoutes.fetch(new Request(`https://agentport.test${path}`, { method, headers: { ...headers, ...extra }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
+    await call("/services", "POST", { id: "mail", name: "Mail", type: "api", accountModels: ["agent_native"], capabilities: ["messages.send"], events: [], connectionPurpose: "agent_resource" });
+    const { agent } = await (await call("/agents", "POST", { principalId: "owner", principalType: "individual", createdBy: "owner", hostPlatform: "external" })).json() as { agent: { id: string } };
+    const { account } = await (await call("/accounts", "POST", { serviceId: "mail", accountModel: "agent_native", ownerType: "individual", ownerId: "owner" })).json() as { account: { id: string } };
+    await call(`/accounts/${account.id}/activate`, "POST", {});
+    await call(`/accounts/${account.id}/grants`, "POST", { agentId: agent.id, grantedBy: "owner", permissions: ["messages.send"] });
+    const authorized = await (await call(`/accounts/${account.id}/actions/authorize`, "POST", { agentId: agent.id, action: "messages.send", resourceRef: "inbox-1", idempotencyKey: "send-1" })).json() as { authorizationId: string };
+    const outcomePath = `/accounts/${account.id}/actions/outcome`;
+    const base = { agentId: agent.id, authorizationId: authorized.authorizationId };
+    const first = await call(outcomePath, "POST", { ...base, operationId: "op-1", outcome: "uncertain", reasonCode: "send_outcome_unknown" });
+    expect(first.status).toBe(201);
+    const firstBody = await first.json() as { receiptId: string; previousHash: string; receiptHash: string };
+    expect(firstBody.previousHash).toBe((db.prepare("SELECT receipt_hash FROM agentport_action_receipts WHERE id=?").get(authorized.authorizationId) as { receipt_hash: string }).receipt_hash);
+    // Replay of the same operation and outcome is the same receipt.
+    const replay = await call(outcomePath, "POST", { ...base, operationId: "op-1", outcome: "uncertain" });
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ receiptId: firstBody.receiptId, idempotent: true });
+    // Reconciliation appends a final outcome chained to the uncertain one; a different final outcome then conflicts.
+    const second = await call(outcomePath, "POST", { ...base, operationId: "op-1", outcome: "succeeded" });
+    expect(second.status).toBe(201);
+    expect(await second.json()).toMatchObject({ previousHash: firstBody.receiptHash });
+    expect((await call(outcomePath, "POST", { ...base, operationId: "op-1", outcome: "failed" })).status).toBe(409);
+    const third = await call(outcomePath, "POST", { ...base, operationId: "op-2", outcome: "failed", reasonCode: "provider_refused" });
+    const thirdBody = await third.json() as { previousHash: string };
+    const secondRow = db.prepare("SELECT receipt_hash FROM agentport_action_receipts WHERE authorization_ref='outcome:op-1:succeeded'").get() as { receipt_hash: string };
+    expect(thirdBody.previousHash).toBe(secondRow.receipt_hash);
+    expect(db.prepare("SELECT outcome,reason_code FROM agentport_action_receipts WHERE authorization_ref='outcome:op-2:failed'").get()).toMatchObject({ outcome: "failed", reason_code: "provider_refused" });
+    // Two concurrent appends never share a previous_hash.
+    const [a, b] = await Promise.all([call(outcomePath, "POST", { ...base, operationId: "op-3", outcome: "succeeded" }), call(outcomePath, "POST", { ...base, operationId: "op-4", outcome: "succeeded" })]);
+    const parents = [(await a.json() as { previousHash: string }).previousHash, (await b.json() as { previousHash: string }).previousHash];
+    expect(new Set(parents).size).toBe(2);
+    // Only an `allowed` receipt of this account and agent authorizes an outcome; the public API role cannot append.
+    expect((await call(outcomePath, "POST", { ...base, authorizationId: firstBody.receiptId, operationId: "op-5", outcome: "succeeded" })).status).toBe(404);
+    expect((await call(outcomePath, "POST", { ...base, operationId: "op-5", outcome: "reversed" })).status).toBe(400);
+    expect((await call(outcomePath, "POST", { ...base, operationId: "op-5", outcome: "succeeded" }, { "x-agentport-actor-role": "agentport_api" })).status).toBe(403);
     db.close();
   });
 

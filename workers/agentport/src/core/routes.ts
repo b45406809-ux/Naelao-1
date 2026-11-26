@@ -558,6 +558,46 @@ routes.post("/accounts/:accountId/actions/authorize",async c=>{
   return c.json({decision:receipt.outcome==="allowed"?"allow":"deny",authorizationId:receipt.id,accountId:account.id,serviceId:account.service_id,contentStored:false},inserted.meta.changes?201:200);
 });
 
+// MS-45 / MR-EXE-1 step 8: append an outcome receipt (succeeded, failed or uncertain) for an action that an `allowed` receipt authorized.
+// Internal only (client_system). The outcome receipt is chained to the newest receipt of the same tenant and agent by previous_hash;
+// the insert only succeeds while that tip is unchanged, so two concurrent appends never share a previous_hash. Idempotent per
+// operation id and outcome. An uncertain outcome may later be followed by a final one; two different final outcomes conflict.
+routes.post("/accounts/:accountId/actions/outcome",async c=>{
+  if(c.req.header("x-agentport-actor-role")!=="client_system")return c.json({error_code:"client_system_identity_required"},403);
+  const body=await c.req.json<{agentId?:string;authorizationId?:string;operationId?:string;outcome?:string;reasonCode?:string}>().catch(()=>null);
+  if(!body||Object.keys(body).some(key=>!["agentId","authorizationId","operationId","outcome","reasonCode"].includes(key)))return c.json({error_code:"invalid_outcome_receipt"},400);
+  const ref=/^[A-Za-z0-9._:-]{1,160}$/;
+  if(!body.agentId||!body.authorizationId||!body.operationId||!ref.test(body.operationId)||!ref.test(body.authorizationId)||
+      !["succeeded","failed","uncertain"].includes(String(body.outcome))||
+      (body.reasonCode!==undefined&&(typeof body.reasonCode!=="string"||!/^[a-z][a-z0-9_:-]{0,99}$/.test(body.reasonCode))))
+    return c.json({error_code:"invalid_outcome_receipt"},400);
+  const tenantId=c.get("tenantId"),accountId=c.req.param("accountId"),db=c.env.PLATFORM_DB,outcome=body.outcome as "succeeded"|"failed"|"uncertain";
+  const authorization=await db.prepare(`SELECT id,account_id,action,resource_ref,provider_id FROM agentport_action_receipts
+    WHERE id=? AND tenant_id=? AND agent_id=? AND account_id=? AND outcome='allowed'`).bind(body.authorizationId,tenantId,body.agentId,accountId)
+    .first<{id:string;account_id:string;action:string;resource_ref:string|null;provider_id:string|null}>();
+  if(!authorization)return c.json({error_code:"authorization_unavailable"},404);
+  const authorizationRef=`outcome:${body.operationId}:${outcome}`;
+  const existing=()=>db.prepare("SELECT id,outcome,previous_hash,receipt_hash FROM agentport_action_receipts WHERE tenant_id=? AND agent_id=? AND authorization_ref=?")
+    .bind(tenantId,body.agentId,authorizationRef).first<{id:string;outcome:string;previous_hash:string|null;receipt_hash:string}>();
+  const sameOperation=await db.prepare("SELECT outcome FROM agentport_action_receipts WHERE tenant_id=? AND agent_id=? AND authorization_ref LIKE ? AND outcome IN ('succeeded','failed')")
+    .bind(tenantId,body.agentId,`outcome:${body.operationId}:%`).first<{outcome:string}>();
+  if(sameOperation&&sameOperation.outcome!==outcome)return c.json({error_code:"outcome_already_final"},409);
+  for(let attempt=0;attempt<8;attempt++){
+    const prior=await existing();
+    if(prior)return c.json({receiptId:prior.id,outcome,previousHash:prior.previous_hash,receiptHash:prior.receipt_hash,idempotent:true},200);
+    const tip=await db.prepare("SELECT receipt_hash FROM agentport_action_receipts WHERE tenant_id=? AND agent_id=? ORDER BY rowid DESC LIMIT 1")
+      .bind(tenantId,body.agentId).first<{receipt_hash:string}>();
+    const previousHash=tip?.receipt_hash??null,receiptId=id("rcpt"),at=stamp();
+    const receiptHash=await hashReceipt(`${previousHash??""}|${receiptId}|${tenantId}|${body.agentId}|${authorization.action}|${authorizationRef}|${outcome}|${at}`);
+    const inserted=await db.prepare(`INSERT OR IGNORE INTO agentport_action_receipts(id,tenant_id,agent_id,account_id,channel_id,action,resource_ref,authorization_ref,provider_id,outcome,reason_code,details_json,previous_hash,receipt_hash,created_at)
+      SELECT ?,?,?,?,NULL,?,?,?,?,?,?,?,?,?,? WHERE COALESCE((SELECT receipt_hash FROM agentport_action_receipts WHERE tenant_id=? AND agent_id=? ORDER BY rowid DESC LIMIT 1),'')=?`)
+      .bind(receiptId,tenantId,body.agentId,accountId,authorization.action,authorization.resource_ref,authorizationRef,authorization.provider_id,outcome,body.reasonCode??null,
+        JSON.stringify({authorizationId:authorization.id,operationId:body.operationId,contentStored:false}),previousHash,receiptHash,at,tenantId,body.agentId,previousHash??"").run();
+    if(inserted.meta.changes)return c.json({receiptId,outcome,previousHash,receiptHash,idempotent:false},201);
+  }
+  return c.json({error_code:"receipt_chain_busy"},503);
+});
+
 routes.post("/accounts/:accountId/access/check",async c=>{
   const body=await c.req.json<{agentId?:string;action?:string}>().catch(()=>null);
   if(!body?.agentId||!body.action||body.action.length>160)return c.json({error_code:"invalid_access_check"},400);
