@@ -2,7 +2,7 @@ import type { Context, Hono } from "hono";
 import { mintInternalToken, readBoundedRequestText, readBoundedResponseJson } from "@naelao/http";
 import { isSpaceNetworkEgressDenied } from "@naelao/security";
 import type { AgentsEnv } from "../index.js";
-import { authenticatedTelnyxEvent, deadLetterProviderEvent, providerEventModuleEnabled } from "./provider-events/index.js";
+import { authenticatedTelnyxEvent, ingestProviderEvent, providerEventModuleEnabled, telnyxProviderEventAdapter } from "./provider-events/index.js";
 import { isE164 } from "../voice/twilio-telephony.js";
 import { channelPreferences, scopeAccess, storeBody, type CommunicationIdentity, type CommunicationScope } from "./core.js";
 import { resolveTelnyxAccount } from "./telnyx-account.js";
@@ -125,6 +125,64 @@ async function dispatchEvent(c: WebhookContext, binding: AssistantPhoneBinding, 
   }
 }
 
+const MANAGED_BINDING_STATES = "'active','billing_hold','indeterminate'";
+async function lookupManagedBinding(env: AgentsEnv, event: TelnyxEvent) {
+  const isCallEvent = event.eventType.startsWith("call.") || event.eventType.startsWith("streaming.");
+  const callControlId = event.payload.call_control_id;
+  const number = targetNumber(event);
+  let binding: AssistantPhoneBinding | null = null;
+  if (isCallEvent && typeof callControlId === "string" && /^[A-Za-z0-9_+=/-]{1,500}$/.test(callControlId)) {
+    binding = await env.PLATFORM_DB.prepare(`SELECT b.* FROM assistant_telnyx_live_calls tc
+      JOIN assistant_phone_bindings b ON b.id=tc.binding_id
+      WHERE tc.call_control_id=? AND b.provider='telnyx' AND b.payer='managed'
+        AND b.status IN (${MANAGED_BINDING_STATES}) LIMIT 1`)
+      .bind(callControlId).first<AssistantPhoneBinding>();
+  }
+  if (!binding && number) binding = await env.PLATFORM_DB.prepare("SELECT * FROM assistant_phone_bindings WHERE provider='telnyx' AND payer='managed' AND phone_number=? AND status='active'")
+    .bind(number).first<AssistantPhoneBinding>();
+  return { binding, isCallEvent };
+}
+
+/** MS-49 (PROVIDER_EVENT_MODULE_ENABLED): the managed route runs through `ingestProviderEvent`. Same provider-facing statuses as the legacy path:
+ * bad signature or unusable payload 401, unknown or revoked line 404, a replay answers like a completed journal row, everything else is the
+ * dispatch's own response. The module claim is written before the journal and released when the response is not 2xx, so a retry still reaches
+ * `telnyx_ingress_journal` exactly as before. The line's tenant comes from the binding that owns the number or live call. */
+async function managedThroughEventModule(c: WebhookContext, raw: string, publicKey: string) {
+  let parsed: TelnyxEvent | null = null;
+  let binding: AssistantPhoneBinding | null = null;
+  let identity: CommunicationIdentity | null = null;
+  const result = await ingestProviderEvent(c.env, telnyxProviderEventAdapter, {
+    rawBody: raw, headers: c.req.raw.headers, secret: publicKey,
+    async resolveResource() {
+      parsed = await authenticatedTelnyxEvent({ rawBody: raw, publicKey, signature: c.req.header("telnyx-signature-ed25519") ?? null, timestamp: c.req.header("telnyx-timestamp") ?? null });
+      binding = (await lookupManagedBinding(c.env, parsed)).binding;
+      if (!binding) return null;
+      identity = await c.env.PLATFORM_DB.prepare("SELECT * FROM assistant_communication_identities WHERE id=? AND status='active'").bind(binding.identity_id).first<CommunicationIdentity>();
+      return identity ? { resourceId: binding.id, tenantId: identity.tenant_id } : null;
+    },
+    // MR-EVT-5: the line must still be live right before anything is woken.
+    async grantActive(_envelope, resource) {
+      return !!await c.env.PLATFORM_DB.prepare(`SELECT 1 AS ok FROM assistant_phone_bindings WHERE id=? AND status IN (${MANAGED_BINDING_STATES})`).bind(resource.resourceId).first();
+    },
+    async deliver() {
+      const b = binding!, i = identity!, e = parsed!;
+      const account = await resolveTelnyxAccount(c.env, i, b);
+      if (!account || account.verifiedNumberId !== b.provider_number_sid || account.verifiedPhoneNumber !== b.phone_number)
+        return { response: c.json({ error_code: "carrier_binding_mismatch" }, 403) };
+      return { response: await dispatchEvent(c, b, i, e, raw) };
+    },
+  });
+  if (result.error) throw result.error;
+  if (result.outcome === "unauthorized" || result.outcome === "ignored") return c.json({ error_code: "invalid_webhook" }, 401);
+  if (result.outcome === "duplicate") return c.json({ accepted: true, duplicate: true });
+  if (result.outcome === "dead_lettered" || result.outcome === "grant_revoked") {
+    if (parsed && binding && !identity) return c.json({ error_code: "not_found" }, 404);
+    const call = !!parsed && ((parsed as TelnyxEvent).eventType.startsWith("call.") || (parsed as TelnyxEvent).eventType.startsWith("streaming."));
+    return c.json({ error_code: call ? "call_binding_not_found" : "unsupported_message" }, 404);
+  }
+  return result.response ?? c.json({ error_code: "event_reconciliation_required" }, 503);
+}
+
 /** Caller ID is data and never grants access to an internal assistant. Owner assistant
  * calls have their own admission path. */
 export function registerTelnyxWebhook(app: Hono<{ Bindings: AgentsEnv }>) {
@@ -156,30 +214,14 @@ export function registerTelnyxWebhook(app: Hono<{ Bindings: AgentsEnv }>) {
     if (!c.env.TELNYX_MANAGED_API_KEY || !c.env.TELNYX_MANAGED_PUBLIC_KEY) return c.json({ error_code: "carrier_unavailable" }, 503);
     let raw: string;
     try { raw = await readBoundedRequestText(c.req.raw, 256 * 1024); } catch { return c.json({ error_code: "payload_too_large" }, 413); }
+    if (providerEventModuleEnabled(c.env)) return managedThroughEventModule(c, raw, c.env.TELNYX_MANAGED_PUBLIC_KEY);
     let event: TelnyxEvent;
     try { event = await authenticatedTelnyxEvent({ rawBody: raw, publicKey: c.env.TELNYX_MANAGED_PUBLIC_KEY,
       signature: c.req.header("telnyx-signature-ed25519") ?? null, timestamp: c.req.header("telnyx-timestamp") ?? null }); }
     catch { return c.json({ error_code: "invalid_webhook" }, 401); }
-    const isCallEvent = event.eventType.startsWith("call.") || event.eventType.startsWith("streaming.");
-    const callControlId = event.payload.call_control_id;
-    const number = targetNumber(event);
-    let binding: AssistantPhoneBinding | null = null;
-    if (isCallEvent && typeof callControlId === "string" && /^[A-Za-z0-9_+=/-]{1,500}$/.test(callControlId)) {
-      binding = await c.env.PLATFORM_DB.prepare(`SELECT b.* FROM assistant_telnyx_live_calls tc
-        JOIN assistant_phone_bindings b ON b.id=tc.binding_id
-        WHERE tc.call_control_id=? AND b.provider='telnyx' AND b.payer='managed'
-          AND b.status IN ('active','billing_hold','indeterminate') LIMIT 1`)
-        .bind(callControlId).first<AssistantPhoneBinding>();
-    }
-    if (!binding && number) binding = await c.env.PLATFORM_DB.prepare("SELECT * FROM assistant_phone_bindings WHERE provider='telnyx' AND payer='managed' AND phone_number=? AND status='active'")
-      .bind(number).first<AssistantPhoneBinding>();
-    if (!binding) {
-      // MR-EVT-3 (PROVIDER_EVENT_MODULE_ENABLED): a verified event whose resource is unknown is dead-lettered; the response is unchanged.
-      if (providerEventModuleEnabled(c.env)) await deadLetterProviderEvent(c.env.PLATFORM_DB, { provider: "telnyx", eventId: event.eventId, eventType: event.eventType,
-        resourceRef: (isCallEvent && typeof callControlId === "string" ? callControlId : number) ?? null, reason: "unknown_resource", rawBody: raw });
-      return c.json({ error_code: isCallEvent ? "call_binding_not_found" : "unsupported_message" }, 404);
-    }
-    if (!binding) return c.json({ error_code: "not_found" }, 404);
+    const found = await lookupManagedBinding(c.env, event);
+    const binding = found.binding;
+    if (!binding) return c.json({ error_code: found.isCallEvent ? "call_binding_not_found" : "unsupported_message" }, 404);
     const identity = await c.env.PLATFORM_DB.prepare("SELECT * FROM assistant_communication_identities WHERE id=? AND status='active'")
       .bind(binding.identity_id).first<CommunicationIdentity>();
     if (!identity) return c.json({ error_code: "not_found" }, 404);
