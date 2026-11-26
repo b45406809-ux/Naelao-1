@@ -1133,6 +1133,8 @@ export interface AgentDOEnv {
   TASK_BLACKBOARD_ENABLED?: string;
   /** MS-21 (D9): delete finished run logs older than 90 days. Default off. */
   RUN_LOG_RETENTION_ENABLED?: string;
+  /** MS-20 (D9): also gates the retry consumer for `worker-branch-retire-pending:` markers (MS-48). Default off. */
+  WORKER_BRANCH_RETENTION_ENABLED?: string;
   TASK_BLACKBOARD_DECISION_TEST_MODE?: string;
   /** Opt in to one bounded worker repair attempt after a confirmed goal task failure. */
   TASK_FIXER_ENABLED?: string;
@@ -2589,6 +2591,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     await this.flushCanonicalUsageOutbox();
     await this.reconcileDecisionReservations();
+    await this.retryPendingWorkerBranchRetirements();
+    await this.pruneRunLogsFromAlarm();
 
     // Find all running runs that are older than TIMEOUT_QUERY_THRESHOLD_S
     const cutoff = new Date(
@@ -5728,7 +5732,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * more than a short timeout. A failure leaves a durable marker; a missed retire only means the
    * branch is kept, because the Coordinator deletes nothing it has not been told to retire.
    */
-  private async retireWorkerBranchBestEffort(subId: string, outcome: "published" | "ended"): Promise<void> {
+  private async retireWorkerBranchBestEffort(subId: string, outcome: "published" | "ended", endedAt: number = Date.now()): Promise<void> {
     try {
       const row = this.ctx.storage.sql.exec(`SELECT workspace_branch, configuration_json FROM sub_agents WHERE id=?`, subId)
         .toArray()[0] as { workspace_branch: string | null; configuration_json: string | null } | undefined;
@@ -5747,17 +5751,62 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const markerKey = `worker-branch-retire-pending:${subId}`;
       try {
         const response = await workspaceCoordinatorRequest(bindings, scope, "/v1/branch/retire",
-          { method: "POST", body: { scope, branch, outcome, endedAt: Date.now() }, signal: AbortSignal.timeout(3_000) });
+          { method: "POST", body: { scope, branch, outcome, endedAt }, signal: AbortSignal.timeout(3_000) });
         if (!response.ok) { await response.body?.cancel().catch(() => undefined); throw new Error(`status_${response.status}`); }
         await response.body?.cancel().catch(() => undefined);
         await this.ctx.storage.delete(markerKey).catch(() => undefined);
       } catch (error) {
         console.warn("worker_branch_retire_failed", { outcome, reason: error instanceof Error ? error.message.slice(0, 40) : "error" });
-        await this.ctx.storage.put(markerKey, { outcome, at: Date.now() }).catch(() => undefined);
+        const previous = await this.ctx.storage.get<{ at?: number; attempts?: number }>(markerKey).catch(() => undefined);
+        // A retry pass has already counted its attempt in the marker; a first failure creates it.
+        const attempts = previous?.attempts ?? 1;
+        await this.ctx.storage.put(markerKey, { outcome, at: previous?.at ?? endedAt, attempts,
+          nextAt: Date.now() + NaelaoAgentDO.retireRetryDelayMs(attempts) }).catch(() => undefined);
       }
     } catch {
       console.warn("worker_branch_retire_failed", { outcome, reason: "exception" });
     }
+  }
+
+  /** MS-48 item 2: backoff for a failed retire call: 5 min doubling to 6 h. */
+  private static retireRetryDelayMs(attempts: number): number {
+    return Math.min(6 * 60 * 60 * 1000, 5 * 60 * 1000 * 2 ** Math.max(0, attempts - 1));
+  }
+  private static readonly RETIRE_RETRY_MAX_ATTEMPTS = 12;
+  private static readonly RETIRE_RETRY_BATCH = 10;
+
+  /**
+   * MS-48 item 2: consumer for `worker-branch-retire-pending:` markers. Behind
+   * WORKER_BRANCH_RETENTION_ENABLED (flag off touches nothing). Retries due markers, at most
+   * RETIRE_RETRY_BATCH per pass, through the same best-effort call (which deletes the marker on
+   * success and backs it off on failure). A marker whose worker row or branch is gone, or that has
+   * failed RETIRE_RETRY_MAX_ATTEMPTS times, is dropped: a missed retire only keeps the branch.
+   */
+  private async retryPendingWorkerBranchRetirements(now: number = Date.now()): Promise<number> {
+    if (this.env.WORKER_BRANCH_RETENTION_ENABLED !== "true" || typeof this.ctx.storage.list !== "function") return 0;
+    let retried = 0;
+    try {
+      const prefix = "worker-branch-retire-pending:";
+      const markers = await this.ctx.storage.list<{ outcome?: string; at?: number; attempts?: number; nextAt?: number }>({ prefix, limit: 100 });
+      for (const [key, marker] of markers) {
+        if (retried >= NaelaoAgentDO.RETIRE_RETRY_BATCH) break;
+        const subId = key.slice(prefix.length);
+        const outcome = marker?.outcome;
+        if (!subId || (outcome !== "published" && outcome !== "ended")) { await this.ctx.storage.delete(key).catch(() => undefined); continue; }
+        if ((marker.nextAt ?? 0) > now) continue;
+        const row = this.ctx.storage.sql.exec(`SELECT workspace_branch FROM sub_agents WHERE id=?`, subId).toArray()[0] as { workspace_branch: string | null } | undefined;
+        if (!row?.workspace_branch || (marker.attempts ?? 0) >= NaelaoAgentDO.RETIRE_RETRY_MAX_ATTEMPTS) {
+          await this.ctx.storage.delete(key).catch(() => undefined);
+          continue;
+        }
+        retried++;
+        const attempts = (marker.attempts ?? 0) + 1;
+        // Count the attempt and back off first, so a path that returns without a call still cannot spin.
+        await this.ctx.storage.put(key, { outcome, at: marker.at ?? now, attempts, nextAt: now + NaelaoAgentDO.retireRetryDelayMs(attempts) }).catch(() => undefined);
+        await this.retireWorkerBranchBestEffort(subId, outcome, marker.at ?? now);
+      }
+    } catch { /* housekeeping, never load-bearing */ }
+    return retried;
   }
 
   private async readSubAgentCheckpointPin(tenantId: string, spaceId: string, projectId: string | undefined, branch: string): Promise<{
@@ -7721,6 +7770,23 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (walDeleted + tracesDeleted + checkpointsCleared > 0) console.info("run_log_retention", counts);
       return counts;
     } catch { return none; /* retention is housekeeping, never load-bearing */ }
+  }
+
+  /**
+   * MS-48 item 3: run-log pruning from the alarm too, so an AgentDO that never opens another run
+   * is still swept. Behind RUN_LOG_RETENTION_ENABLED (flag off: no call, no storage write). Runs at
+   * most daily, or again after 5 minutes when a pass hit the per-table batch limit.
+   */
+  private static readonly RUN_LOG_ALARM_KEY = "run-log-prune:next-at";
+  private async pruneRunLogsFromAlarm(now: number = Date.now()): Promise<void> {
+    if (this.env.RUN_LOG_RETENTION_ENABLED !== "true") return;
+    try {
+      const next = await this.ctx.storage.get<number>(NaelaoAgentDO.RUN_LOG_ALARM_KEY);
+      if (typeof next === "number" && next > now) return;
+      const counts = this.pruneRunLogs(now);
+      const more = Math.max(counts.walDeleted, counts.tracesDeleted, counts.checkpointsCleared) >= NaelaoAgentDO.RUN_LOG_RETENTION_BATCH;
+      await this.ctx.storage.put(NaelaoAgentDO.RUN_LOG_ALARM_KEY, now + (more ? 5 * 60 * 1000 : 24 * 60 * 60 * 1000));
+    } catch { /* housekeeping, never load-bearing */ }
   }
 
   /**
@@ -12165,6 +12231,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         if (row.providerGenerationId) candidates.push(Math.max(now + 1_000, row.nextReconcileAt ?? now + 60_000));
         else if (row.status === "reserved" && row.reservedAt) candidates.push(Math.max(now + 1_000, row.reservedAt + 120_000));
       }
+    }
+    if (this.env.WORKER_BRANCH_RETENTION_ENABLED === "true" && typeof this.ctx.storage.list === "function") {
+      const pending = await this.ctx.storage.list<{ nextAt?: number }>({ prefix: "worker-branch-retire-pending:", limit: 100 });
+      for (const marker of pending.values()) candidates.push(Math.max(now + 1_000, marker?.nextAt ?? now + 60_000));
+    }
+    if (this.env.RUN_LOG_RETENTION_ENABLED === "true") {
+      const nextPrune = await this.ctx.storage.get<number>(NaelaoAgentDO.RUN_LOG_ALARM_KEY).catch(() => undefined);
+      candidates.push(Math.max(now + 1_000, typeof nextPrune === "number" ? nextPrune : now + 60 * 60 * 1000));
     }
     if (candidates.length) await this.ctx.storage.setAlarm(Math.min(...candidates));
     else await this.ctx.storage.deleteAlarm();
