@@ -236,6 +236,46 @@ describe("period-end settlement", () => {
   });
 });
 
+describe("suspension pauses sending (MS-41)", () => {
+  const paused = (h: Awaited<ReturnType<typeof provisioned>>["h"], inbox: string) =>
+    h.email.db.prepare("SELECT sending_paused AS p, sending_pause_reason AS r FROM nemail_inboxes WHERE id=?").get(inbox) as { p: number; r: string | null };
+
+  it("grace keeps sending; suspension pauses that inbox through the email worker; recovery lifts only that pause", async () => {
+    const { h, inbox } = await provisioned();
+    h.failures.add("reserve:renew");
+    await h.sweep(PERIOD_END);
+    expect(h.sub()).toMatchObject({ renewal_state: "grace" });
+    expect(paused(h, inbox)).toEqual({ p: 0, r: null });
+    expect(await h.sweep(new Date(PERIOD_END.getTime() + 8 * 86_400_000))).toMatchObject({ suspended: 1 });
+    expect(h.sub()).toMatchObject({ renewal_state: "suspended" });
+    expect(paused(h, inbox)).toEqual({ p: 1, r: "subscription_suspended" });
+    // Recovery: the adapter lifts the pause it owns.
+    await expect(h.adapter.setSendingPaused({ tenantId: scope.tenantId, provider_resource_ref: inbox, paused: false })).resolves.toEqual({ sendingPaused: false });
+    expect(paused(h, inbox)).toEqual({ p: 0, r: null });
+  });
+
+  it("a failed pause at suspension (and its in-sweep retry) is retried by the next sweep", async () => {
+    const { h, inbox } = await provisioned();
+    h.failures.add("reserve:renew");
+    await h.sweep(PERIOD_END);
+    const real = h.adapter.setSendingPaused;
+    let calls = 0;
+    h.adapter.setSendingPaused = async (req) => { if (calls++ < 2) throw new Error("outcome_unknown"); return real(req); };
+    await h.sweep(new Date(PERIOD_END.getTime() + 8 * 86_400_000));
+    expect(h.sub()).toMatchObject({ renewal_state: "suspended" });
+    expect(paused(h, inbox).p).toBe(0);
+    await h.sweep(new Date(PERIOD_END.getTime() + 9 * 86_400_000));
+    expect(paused(h, inbox)).toEqual({ p: 1, r: "subscription_suspended" });
+  });
+
+  it("a healthy renewal never touches sending", async () => {
+    const { h, inbox } = await provisioned();
+    await h.sweep(PERIOD_END);
+    expect(h.sub()).toMatchObject({ renewal_state: "active" });
+    expect(paused(h, inbox)).toEqual({ p: 0, r: null });
+  });
+});
+
 describe("direct Naelao Email tenants", () => {
   it("are never billed: no subscription, no charge, no usage answer from the email worker", async () => {
     const { h } = await provisioned({ sent: 10 });

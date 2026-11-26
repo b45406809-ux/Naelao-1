@@ -202,7 +202,7 @@ async function claimChargeRow(db: Db, sub: ManagedSubscription, kind: "rental" |
   return row;
 }
 
-export function createNaelaoEmailSubscriptionHandler(adapter: Pick<NaelaoEmailAdapter, "usageForPeriod" | "lookup">): SubscriptionTypeHandler {
+export function createNaelaoEmailSubscriptionHandler(adapter: Pick<NaelaoEmailAdapter, "usageForPeriod" | "lookup"> & Partial<Pick<NaelaoEmailAdapter, "setSendingPaused">>): SubscriptionTypeHandler {
   return {
     async renew(env, sub, now): Promise<RenewalResult> {
       const commit = readCommitment(sub);
@@ -239,12 +239,36 @@ export function createNaelaoEmailSubscriptionHandler(adapter: Pick<NaelaoEmailAd
       }
       return { status: "renewed", periodEnd: addMonthMs(sub.current_period_end, commit.anchor_day), operationId: `nemail_${rental.id}`, billed: rental.credits > 0 || overage.credits > 0 };
     },
-    async onSuspended() { /* Sending is not paused here; the engine's grace, notices and release gate apply (MS-36). */ },
+    /**
+     * MS-41: a suspended subscription pauses that inbox's sending in the email worker. The engine swallows a failure here, so the
+     * pause is also retried by `reconcileSuspendedInboxPauses` on every sweep. Grace never pauses sending (the owner can still recover).
+     */
+    async onSuspended(_env, sub) {
+      const commit = readCommitment(sub);
+      if (!commit || !adapter.setSendingPaused) return;
+      await adapter.setSendingPaused({ tenantId: sub.tenant_id, provider_resource_ref: commit.inbox_id, paused: true });
+    },
   };
 }
 
 /** Sweeps due `naelao_email_inbox` subscriptions. A no-op unless MANAGED_SUBSCRIPTIONS_ENABLED and MANAGED_OFFERINGS_ENABLED are both "true". */
-export async function sweepNaelaoEmailSubscriptions(env: AgentsEnv, adapter: Pick<NaelaoEmailAdapter, "usageForPeriod" | "lookup">, now = new Date()): Promise<SubscriptionSweepResult | null> {
+export async function sweepNaelaoEmailSubscriptions(env: AgentsEnv, adapter: Pick<NaelaoEmailAdapter, "usageForPeriod" | "lookup"> & Partial<Pick<NaelaoEmailAdapter, "setSendingPaused">>, now = new Date()): Promise<SubscriptionSweepResult | null> {
   if (!managedSubscriptionsEnabled(env) || env.MANAGED_OFFERINGS_ENABLED !== "true" || !env.BILLING_WORKER) return null;
-  return sweepManagedSubscriptions(env, { [NAELAO_EMAIL_SUBSCRIPTION_TYPE]: createNaelaoEmailSubscriptionHandler(adapter) }, now);
+  const result = await sweepManagedSubscriptions(env, { [NAELAO_EMAIL_SUBSCRIPTION_TYPE]: createNaelaoEmailSubscriptionHandler(adapter) }, now);
+  await reconcileSuspendedInboxPauses(env, adapter);
+  return result;
+}
+
+/** MS-41: idempotent retry of the pause for suspended inboxes (the suspension hook runs once and its failure is swallowed). Bounded per sweep. */
+export async function reconcileSuspendedInboxPauses(env: AgentsEnv, adapter: Partial<Pick<NaelaoEmailAdapter, "setSendingPaused">>, limit = 50): Promise<number> {
+  if (!adapter.setSendingPaused) return 0;
+  const rows = await env.PLATFORM_DB.prepare("SELECT * FROM managed_service_subscriptions WHERE subscription_type=? AND renewal_state='suspended' ORDER BY suspended_at LIMIT ?")
+    .bind(NAELAO_EMAIL_SUBSCRIPTION_TYPE, limit).all<ManagedSubscription>();
+  let paused = 0;
+  for (const sub of rows.results) {
+    const commit = readCommitment(sub);
+    if (!commit) continue;
+    try { await adapter.setSendingPaused({ tenantId: sub.tenant_id, provider_resource_ref: commit.inbox_id, paused: true }); paused++; } catch { /* retried next sweep */ }
+  }
+  return paused;
 }

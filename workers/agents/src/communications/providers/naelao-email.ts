@@ -52,6 +52,8 @@ interface Reply { status: number; body: Record<string, unknown> | null }
 /** MS-40: the platform's own read of a Managed inbox's sent-message count (not part of the §8 contract). */
 export interface NaelaoEmailAdapter extends ProviderAdapterV1 {
   usageForPeriod(req: { tenantId: string; provider_resource_ref: string; startMs: number; endMs: number }): Promise<{ sentCount: number }>;
+  /** MS-41: pause or resume one Managed inbox's sending through the email worker's platform route. Only the subscription-suspension pause is touched. */
+  setSendingPaused(req: { tenantId: string; provider_resource_ref: string; paused: boolean }): Promise<{ sendingPaused: boolean }>;
 }
 
 export function createNaelaoEmailAdapter(env: NaelaoEmailAdapterEnv, now: () => Date = () => new Date()): NaelaoEmailAdapter {
@@ -181,6 +183,20 @@ export function createNaelaoEmailAdapter(env: NaelaoEmailAdapterEnv, now: () => 
       const count = (reply.body?.data as { sent_count?: unknown } | undefined)?.sent_count;
       if (reply.status !== 200 || typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) return refuse(reply);
       return { sentCount: count };
+    },
+
+    async setSendingPaused(req: { tenantId: string; provider_resource_ref: string; paused: boolean }) {
+      enabled();
+      const ref = refPath(req.provider_resource_ref);
+      const tenant = nemailTenantId(req.tenantId);
+      const reply = await raw(new Request(`${BASE}/internal/v1/inboxes/sending`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenant, "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenant) },
+        body: JSON.stringify({ inbox_id: decodeURIComponent(ref), paused: req.paused }),
+      }));
+      const paused = (reply.body?.data as { sending_paused?: unknown } | undefined)?.sending_paused;
+      if (reply.status !== 200 || typeof paused !== "boolean") return refuse(reply);
+      return { sendingPaused: paused };
     },
 
     async lookup(req: LookupReq): Promise<ProviderResource | null> {
