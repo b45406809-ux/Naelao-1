@@ -53,7 +53,7 @@ interface Reply { status: number; body: Record<string, unknown> | null }
 export interface NaelaoEmailAdapter extends ProviderAdapterV1 {
   usageForPeriod(req: { tenantId: string; provider_resource_ref: string; startMs: number; endMs: number }): Promise<{ sentCount: number }>;
   /** MS-41: pause or resume one Managed inbox's sending through the email worker's platform route. Only the subscription-suspension pause is touched. */
-  setSendingPaused(req: { tenantId: string; provider_resource_ref: string; paused: boolean }): Promise<{ sendingPaused: boolean }>;
+  setSendingPaused(req: { tenantId: string; provider_resource_ref: string; paused: boolean; reason?: "subscription_suspended" | "owner_suspended" }): Promise<{ sendingPaused: boolean }>;
 }
 
 export function createNaelaoEmailAdapter(env: NaelaoEmailAdapterEnv, now: () => Date = () => new Date()): NaelaoEmailAdapter {
@@ -185,14 +185,14 @@ export function createNaelaoEmailAdapter(env: NaelaoEmailAdapterEnv, now: () => 
       return { sentCount: count };
     },
 
-    async setSendingPaused(req: { tenantId: string; provider_resource_ref: string; paused: boolean }) {
+    async setSendingPaused(req: { tenantId: string; provider_resource_ref: string; paused: boolean; reason?: "subscription_suspended" | "owner_suspended" }) {
       enabled();
       const ref = refPath(req.provider_resource_ref);
       const tenant = nemailTenantId(req.tenantId);
       const reply = await raw(new Request(`${BASE}/internal/v1/inboxes/sending`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-naelao-tenant-id": tenant, "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenant) },
-        body: JSON.stringify({ inbox_id: decodeURIComponent(ref), paused: req.paused }),
+        body: JSON.stringify({ inbox_id: decodeURIComponent(ref), paused: req.paused, ...(req.reason ? { reason: req.reason } : {}) }),
       }));
       const paused = (reply.body?.data as { sending_paused?: unknown } | undefined)?.sending_paused;
       if (reply.status !== 200 || typeof paused !== "boolean") return refuse(reply);

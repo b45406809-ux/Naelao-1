@@ -3,7 +3,8 @@
 import * as React from "react";
 import { assistantMailApi, type SessionCredentials } from "@/lib/api";
 import {
-  describeComponent, parseManagedResources, parseResourceOptions, parseResourceQuote, resourceModeLabel, resourceTitle,
+  describeComponent, parseManagedResources, parseResourceOptions, parseResourceQuote, resourceLifecycleActions, resourceModeLabel, resourceTitle,
+  type ResourceLifecycleAction,
   type ManagedResource, type ResourceOptionsView, type ResourceQuoteView,
 } from "@/lib/managed-resources";
 
@@ -98,10 +99,19 @@ function AddResourceFlow({ spaceId, session, onAdded }: { spaceId: string; sessi
   );
 }
 
-/** MS-42: provider-agnostic Resources list. Renders nothing while the server flag is off (404) or on any error. List only: no suspend or export yet. */
+const LIFECYCLE_LABEL: Record<ResourceLifecycleAction, string> = { suspend: "Suspend", resume: "Resume", reactivate: "Reactivate" };
+const LIFECYCLE_NOTE: Record<ResourceLifecycleAction, string> = {
+  suspend: "Pauses sending. The monthly charge continues until you cancel.",
+  resume: "Lifts your pause and restores sending.",
+  reactivate: "Charges the overdue period, then restores sending.",
+};
+
+/** MS-42: provider-agnostic Resources list. Renders nothing while the server flag is off (404) or on any error. MS-47 adds owner suspend, resume and reactivate; export and release remain. */
 export function ManagedResourcesSection({ spaceId, session }: { spaceId: string; session: SessionCredentials }) {
   const [resources, setResources] = React.useState<ManagedResource[] | null>(null);
   const [reload, setReload] = React.useState(0);
+  const [busyId, setBusyId] = React.useState<string | null>(null);
+  const [notice, setNotice] = React.useState<string | null>(null);
   React.useEffect(() => {
     let current = true;
     assistantMailApi<unknown>(spaceId, session, { action: "managed-resources" })
@@ -111,6 +121,13 @@ export function ManagedResourcesSection({ spaceId, session }: { spaceId: string;
   }, [spaceId, session, reload]);
   if (resources === null) return null;
   const date = (value: string) => new Date(value).toLocaleDateString();
+  const lifecycle = async (resource: ManagedResource, action: ResourceLifecycleAction) => {
+    setNotice(null); setBusyId(resource.id);
+    try {
+      await assistantMailApi<unknown>(spaceId, session, { action: `resource-${action}`, resource_id: resource.id }, true);
+      setReload((value) => value + 1);
+    } catch (error) { setNotice(error instanceof Error ? error.message : "That did not work. Try again."); } finally { setBusyId(null); }
+  };
   return (
     <div className="settings-block" data-testid="managed-resources">
       <div className="settings-row-label">Resources</div>
@@ -127,10 +144,17 @@ export function ManagedResourcesSection({ spaceId, session }: { spaceId: string;
               {resource.price && <div>Price: {resource.price.credits} credits per month</div>}
               {resource.renewal && <div>{resource.renewal.cancelAtPeriodEnd ? "Ends" : "Renews"} {date(resource.renewal.currentPeriodEnd)}
                 {resource.renewal.state !== "active" ? ` (${resource.renewal.state})` : ""}</div>}
+              {resourceLifecycleActions(resource).map((action) => (
+                <div key={action}>
+                  <button type="button" disabled={busyId === resource.id} onClick={() => void lifecycle(resource, action)}>{LIFECYCLE_LABEL[action]}</button>{" "}
+                  <span>{LIFECYCLE_NOTE[action]}</span>
+                </div>
+              ))}
             </li>
           ))}
         </ul>
       )}
+      {notice && <p role="alert" className="settings-row-sub">{notice}</p>}
       <AddResourceFlow spaceId={spaceId} session={session} onAdded={() => setReload((value) => value + 1)} />
     </div>
   );

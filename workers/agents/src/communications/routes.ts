@@ -18,6 +18,7 @@ import { ManagedOfferingAdminError, approveCommercialAgreement, revokeCommercial
 import { disableManagedServiceCapability, verifyManagedServiceCapability } from "./managed-service-capabilities.js";
 import { getManagedServiceDashboard } from "./managed-service-dashboard.js";
 import { listManagedResources, managedResourcesPanelEnabled } from "./managed-resources.js";
+import { ResourceLifecycleError, resumeManagedResource, suspendManagedResource } from "./managed-resource-lifecycle.js";
 import { ResourceGrantError, grantManagedResourceToAgent } from "./managed-resource-grants.js";
 import { ResourceAddError, createResourceQuote, listResourceOptions, provisionManagedResource } from "./managed-resource-add.js";
 import { acknowledgeManagedServiceCostBudgetAlert, setManagedServiceCostBudget } from "./managed-service-cost-budgets.js";
@@ -244,7 +245,7 @@ async function handle(c: C, agent: boolean) {
     }
   }
   const preferences = await channelPreferences(c.env, scope);
-  if(action==="managed-resources"||action==="resource-options"||action==="resource-quote"||action==="resource-provision"||action==="resource-grant"){
+  if(action==="managed-resources"||action==="resource-options"||action==="resource-quote"||action==="resource-provision"||action==="resource-grant"||action==="resource-suspend"||action==="resource-resume"){
     // MS-42/MS-43: every failure (flag off, wrong method, not owner/admin) answers the same not-found shape (MR-SEC-2).
     const notFound=()=>c.json({error_code:"not_found"},404);
     const expectedMethod=action==="managed-resources"||action==="resource-options"?"GET":"POST";
@@ -256,6 +257,15 @@ async function handle(c: C, agent: boolean) {
     if(action==="managed-resources"){
       try{return c.json(await listManagedResources(c.env,scope));}
       catch{return c.json({error_code:"managed_resources_unavailable"},503);}
+    }
+    if(action==="resource-suspend"||action==="resource-resume"){
+      // MS-47: owner suspend/resume of one Managed resource (list and add flow untouched).
+      const resourceId=typeof body.resource_id==="string"?body.resource_id:"";
+      try{return c.json(action==="resource-suspend"?await suspendManagedResource(c.env,scope,resourceId):await resumeManagedResource(c.env,scope,resourceId));}
+      catch(error){
+        if(error instanceof ResourceLifecycleError)return c.json({error_code:error.code},error.status as 400);
+        return c.json({error_code:"managed_resources_unavailable"},503);
+      }
     }
     if(action==="resource-grant"){
       const resourceId=typeof body.resource_id==="string"?body.resource_id:"",agentId=typeof body.agent_id==="string"?body.agent_id:"";

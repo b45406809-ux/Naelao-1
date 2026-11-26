@@ -116,3 +116,13 @@ export function describeComponent(component: QuoteComponentView): string {
     default: return `${component.kind === "usage" ? "Usage" : "Storage"} (${component.meter}): first ${component.included} included, then ${component.unitCredits} credits per ${component.unitQty}`;
   }
 }
+
+// MS-47: lifecycle actions the Resources panel offers for one resource. Only a Managed resource with a subscription can be paused
+// (the server answers 501 for anything else); the server decides again on every call, so this only hides buttons that cannot work.
+export type ResourceLifecycleAction = "suspend" | "resume" | "reactivate";
+export function resourceLifecycleActions(resource: Pick<ManagedResource, "mode" | "status" | "renewal">): ResourceLifecycleAction[] {
+  if (resource.mode !== "managed" || !resource.renewal) return [];
+  if (resource.renewal.state === "suspended") return ["reactivate"];
+  if (resource.status === "suspended") return ["resume"];
+  return resource.status === "active" ? ["suspend"] : [];
+}

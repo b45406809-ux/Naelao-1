@@ -36,6 +36,26 @@ describe("POST /internal/v1/inboxes/sending", () => {
     expect(await res.json()).toMatchObject({ data: { sending_paused: true } });
   });
 
+  it("MS-47: an owner pause carries its own tag and never lifts, or is lifted by, a billing suspension", async () => {
+    const f = fixture();
+    const key = await seedTenant(f, "naelao-t1");
+    const a = await createInbox(f, key, "a-box");
+    const reason = () => f.db.prepare("SELECT sending_paused AS p, sending_pause_reason AS r FROM nemail_inboxes WHERE id=?").get(a);
+    expect(await (await pause(f, "naelao-t1", { inbox_id: a, paused: true, reason: "owner_suspended" })).json()).toMatchObject({ data: { sending_paused: true, pause_reason: "owner_suspended" } });
+    expect(await code(await sendMail(f, key, a, ok))).toBe("sending_paused");
+    // A billing resume does not lift the owner's pause; a billing pause does not overwrite it.
+    await pause(f, "naelao-t1", { inbox_id: a, paused: false });
+    await pause(f, "naelao-t1", { inbox_id: a, paused: true });
+    expect(reason()).toEqual({ p: 1, r: "owner_suspended" });
+    await pause(f, "naelao-t1", { inbox_id: a, paused: false, reason: "owner_suspended" });
+    expect(reason()).toEqual({ p: 0, r: null });
+    // The reverse: an owner resume does not lift a billing pause.
+    await pause(f, "naelao-t1", { inbox_id: a, paused: true });
+    await pause(f, "naelao-t1", { inbox_id: a, paused: false, reason: "owner_suspended" });
+    expect(reason()).toEqual({ p: 1, r: "subscription_suspended" });
+    expect((await pause(f, "naelao-t1", { inbox_id: a, paused: true, reason: "operator" })).status).toBe(400);
+  });
+
   it("answers 404 for direct, AgentPort, other-tenant and unknown inboxes, 403 for a bad token, 400 for a bad body", async () => {
     const f = fixture();
     const direct = await seedTenant(f, "direct-t");

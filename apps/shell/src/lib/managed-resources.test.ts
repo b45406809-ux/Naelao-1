@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeComponent, parseManagedResources, parseResourceOptions, parseResourceQuote, resourceModeLabel, resourceTitle } from "./managed-resources.js";
+import { describeComponent, parseManagedResources, parseResourceOptions, parseResourceQuote, resourceLifecycleActions, resourceModeLabel, resourceTitle } from "./managed-resources.js";
 
 const good = { id: "r1", providerName: "AgentMail", status: "active", mode: "managed", displayName: "Support", category: "email", resourceType: "email_inbox",
   region: "us", projectId: null, assignedAgents: [{ agentId: "a1" }, { agentId: 3 }],
@@ -50,5 +50,21 @@ describe("add-resource parsers", () => {
     expect(quote!.components.map(describeComponent)).toEqual(["Setup: 10 credits, once", "Rental: 100 credits per month", "Usage (sends): first 1000 included, then 5 credits per 1000"]);
     expect(parseResourceQuote({ quote: { quoteId: "x" } })).toBeNull();
     expect(parseResourceQuote(undefined)).toBeNull();
+  });
+});
+
+describe("MS-47 lifecycle actions", () => {
+  const renewal = (state: string) => ({ state, currentPeriodEnd: "2026-12-01T00:00:00.000Z", cancelAtPeriodEnd: false });
+  it("offers suspend for an active subscribed Managed resource, resume after an owner suspend, reactivate after non-payment", () => {
+    expect(resourceLifecycleActions({ mode: "managed", status: "active", renewal: renewal("active") })).toEqual(["suspend"]);
+    expect(resourceLifecycleActions({ mode: "managed", status: "active", renewal: renewal("grace") })).toEqual(["suspend"]);
+    expect(resourceLifecycleActions({ mode: "managed", status: "suspended", renewal: renewal("active") })).toEqual(["resume"]);
+    expect(resourceLifecycleActions({ mode: "managed", status: "active", renewal: renewal("suspended") })).toEqual(["reactivate"]);
+    expect(resourceLifecycleActions({ mode: "managed", status: "suspended", renewal: renewal("suspended") })).toEqual(["reactivate"]);
+  });
+  it("offers nothing for BYOK, a resource without a subscription, or a state with no action", () => {
+    expect(resourceLifecycleActions({ mode: "byok", status: "active", renewal: renewal("active") })).toEqual([]);
+    expect(resourceLifecycleActions({ mode: "managed", status: "active", renewal: null })).toEqual([]);
+    expect(resourceLifecycleActions({ mode: "managed", status: "failed", renewal: renewal("active") })).toEqual([]);
   });
 });

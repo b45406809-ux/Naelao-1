@@ -130,18 +130,21 @@ app.post("/internal/v1/inboxes/sending", async c => {
   if (!c.env.PLATFORM_SECRET || !tenantId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
     return c.json({ error_code: "forbidden", message: "Forbidden." }, 403);
   }
-  const body = await c.req.json<{ inbox_id?: unknown; paused?: unknown }>().catch(() => null);
-  if (!body || typeof body.inbox_id !== "string" || !/^inb_[A-Za-z0-9_-]{1,80}$/.test(body.inbox_id) || typeof body.paused !== "boolean") {
+  const body = await c.req.json<{ inbox_id?: unknown; paused?: unknown; reason?: unknown }>().catch(() => null);
+  // MS-47: the owner's own suspend/resume uses a second tag, so it never lifts (or is lifted by) a billing suspension.
+  const reason = body?.reason === undefined ? "subscription_suspended" : body.reason;
+  if (!body || typeof body.inbox_id !== "string" || !/^inb_[A-Za-z0-9_-]{1,80}$/.test(body.inbox_id) || typeof body.paused !== "boolean"
+    || (reason !== "subscription_suspended" && reason !== "owner_suspended")) {
     return c.json({ error_code: "invalid_request", message: "Invalid sending request." }, 400);
   }
   if (!tenantId.startsWith("naelao-")) return c.json({ error_code: "not_found", message: "Not found." }, 404);
   const db = c.env.PLATFORM_DB;
   if (body.paused) {
-    await db.prepare("UPDATE nemail_inboxes SET sending_paused=1, sending_pause_reason='subscription_suspended' WHERE id=? AND nemail_tenant_id=? AND status != 'deleted' AND sending_paused=0")
-      .bind(body.inbox_id, tenantId).run();
+    await db.prepare("UPDATE nemail_inboxes SET sending_paused=1, sending_pause_reason=? WHERE id=? AND nemail_tenant_id=? AND status != 'deleted' AND sending_paused=0")
+      .bind(reason, body.inbox_id, tenantId).run();
   } else {
-    await db.prepare("UPDATE nemail_inboxes SET sending_paused=0, sending_pause_reason=NULL WHERE id=? AND nemail_tenant_id=? AND status != 'deleted' AND sending_pause_reason='subscription_suspended'")
-      .bind(body.inbox_id, tenantId).run();
+    await db.prepare("UPDATE nemail_inboxes SET sending_paused=0, sending_pause_reason=NULL WHERE id=? AND nemail_tenant_id=? AND status != 'deleted' AND sending_pause_reason=?")
+      .bind(body.inbox_id, tenantId, reason).run();
   }
   const row = await db.prepare("SELECT sending_paused,sending_pause_reason FROM nemail_inboxes WHERE id=? AND nemail_tenant_id=? AND status != 'deleted'")
     .bind(body.inbox_id, tenantId).first<{ sending_paused: number; sending_pause_reason: string | null }>();
