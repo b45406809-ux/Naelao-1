@@ -17,6 +17,7 @@ import { ManagedOfferingAdminError, approveCommercialAgreement, revokeCommercial
 import { disableManagedServiceCapability, verifyManagedServiceCapability } from "./managed-service-capabilities.js";
 import { getManagedServiceDashboard } from "./managed-service-dashboard.js";
 import { listManagedResources, managedResourcesPanelEnabled } from "./managed-resources.js";
+import { ResourceGrantError, grantManagedResourceToAgent } from "./managed-resource-grants.js";
 import { ResourceAddError, createResourceQuote, listResourceOptions, provisionManagedResource } from "./managed-resource-add.js";
 import { acknowledgeManagedServiceCostBudgetAlert, setManagedServiceCostBudget } from "./managed-service-cost-budgets.js";
 import { createManagedModelQuote, runManagedModelOperation } from "./managed-models.js";
@@ -242,7 +243,7 @@ async function handle(c: C, agent: boolean) {
     }
   }
   const preferences = await channelPreferences(c.env, scope);
-  if(action==="managed-resources"||action==="resource-options"||action==="resource-quote"||action==="resource-provision"){
+  if(action==="managed-resources"||action==="resource-options"||action==="resource-quote"||action==="resource-provision"||action==="resource-grant"){
     // MS-42/MS-43: every failure (flag off, wrong method, not owner/admin) answers the same not-found shape (MR-SEC-2).
     const notFound=()=>c.json({error_code:"not_found"},404);
     const expectedMethod=action==="managed-resources"||action==="resource-options"?"GET":"POST";
@@ -254,6 +255,15 @@ async function handle(c: C, agent: boolean) {
     if(action==="managed-resources"){
       try{return c.json(await listManagedResources(c.env,scope));}
       catch{return c.json({error_code:"managed_resources_unavailable"},503);}
+    }
+    if(action==="resource-grant"){
+      const resourceId=typeof body.resource_id==="string"?body.resource_id:"",agentId=typeof body.agent_id==="string"?body.agent_id:"";
+      const actions=Array.isArray(body.actions)?body.actions as string[]:[];
+      try{return c.json(await grantManagedResourceToAgent(c.env,scope,{resourceId,agentId,actions}));}
+      catch(error){
+        if(error instanceof ResourceGrantError)return c.json({error_code:error.code},error.status as 400);
+        return c.json({error_code:"managed_resources_unavailable"},503);
+      }
     }
     const param=(key:string)=>{const v=c.req.method==="GET"?c.req.query(key):body[key];return typeof v==="string"&&v?v:null;};
     const mode=param("access_mode")??"managed";

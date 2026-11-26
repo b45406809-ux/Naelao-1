@@ -203,6 +203,7 @@ export * from "./customer-bot-context.js";
 export * from "./blueprint.js";
 export * from "./blueprint-business-roles.js";
 export * from "./blueprint-subspace-roles.js";
+export * from "./blueprint-resource-requirements.js";
 export * from "./blueprint-setup-fields.js";
 export * from "./recipes.js";
 export * from "./no-code-subagent.js";

@@ -2,9 +2,7 @@
 
 ## Current task
 
-Master implementation spec, **MS-44** (P3 Template resource requirements). V-spec P0–P2 are
-complete locally and MS-42 (Resources panel) and MS-43 (add-resource flow) have landed. Follow [the master spec](docs/operations/master-implementation-spec.md) and
-[V-spec](new%20plan/V-spec.md). Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
+V-spec P0–P3 are complete locally (MS-27..MS-44). Next is V-spec P4 (execution unification and provider event module) — tasks to be written into the master spec. Keep this pointer and `CLAUDE.md` in sync (`cp AGENTS.md CLAUDE.md`).
 
 ## Start or resume
 

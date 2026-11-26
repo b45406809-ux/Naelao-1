@@ -1,3 +1,4 @@
+import type { BlueprintResourceRequirementV1 } from "./blueprint-resource-requirements.js";
 import type { BlueprintSubspaceRoleV1, BlueprintSubspaceRouteProposalV1 } from "./blueprint-subspace-roles.js";
 /** Public contracts for code authored against the universal AVOS runtime. */
 export type RuntimeScope = "USER_PRIVATE" | "SPACE_WIDE" | "PROJECT_BOUND";
@@ -344,6 +345,8 @@ export interface SpaceBlueprint {
   subspaceRoles?: BlueprintSubspaceRoleV1[];
   /** Route proposals between declared roles. These never create routes; the owner approves later. */
   subspaceRouteProposals?: BlueprintSubspaceRouteProposalV1[];
+  /** Provider resource needs. These never provision, spend or grant; the owner approves each line at activation. */
+  resourceRequirements?: BlueprintResourceRequirementV1[];
   /** Required when any project declares setupFields. */
   setupSchemaVersion?: 1 | 2;
   /** Optional signed, data-only migrations for owner-reviewed template setup updates. */

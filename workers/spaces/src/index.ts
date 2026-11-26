@@ -1,4 +1,5 @@
 import { registerAssistantVoiceRoutes } from "./routes/assistant-voice.js";
+import { buildResourceRequirementPreview, decideTemplateResourceProposal, parseResourceProposalDecision, proposalsFromRequirements, templateResourceRequirementsEnabled } from "./template-resource-requirements.js";
 import { registerSpaceCoordinationRoutes } from "./routes/space-coordination.js";
 import { standingBlackboardPeer } from "./blackboard-sharing.js";
 import { persistBlackboardWakePolicy } from "./blackboard-wake-policy.js";
@@ -105,6 +106,8 @@ export interface Env {
   DATA_JURISDICTION?: "eu";
   UNIFIED_WORKSPACE_ENABLED?: string;
   SUBSPACE_RESOURCE_LINKS_ENABLED?: string;
+  /** MS-44: template resource requirements (preview options, pending proposals, owner approval). Off by default. */
+  TEMPLATE_RESOURCE_REQUIREMENTS_ENABLED?: string;
   /** Opt-in bounded hash-only verification; does not change the read source. */
   WORKSPACE_DUAL_READ_ENABLED?: string;
   PROJECT_MEMORY_RETENTION_ENABLED?: string;
@@ -1561,7 +1564,10 @@ app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c =
     const options = await optionsResponse.json<{ subspaces?: Array<{ id?: unknown; name?: unknown }> }>().catch(() => ({} as { subspaces?: Array<{ id?: unknown; name?: unknown }> }));
     subspaceMappingOptions = (options.subspaces ?? []).flatMap(item => typeof item.id === "string" && typeof item.name === "string" ? [{ id: item.id, name: item.name }] : []);
   }
-  return c.json({ ...preview, subspace_mapping_options: subspaceMappingOptions, coordination_policy_current: coordinationPolicyCurrent,
+  // MS-44: list options per requirement (reuse first, then create with prices, connect, skip). Nothing is created or granted here.
+  const resourceRequirements = templateResourceRequirementsEnabled(c.env) && blueprint.resourceRequirements?.length
+    ? await buildResourceRequirementPreview(c.env, { tenantId, spaceId, userId: identity.userId, role: identity.role }, blueprint) : null;
+  return c.json({ ...preview, ...(resourceRequirements ? { resource_requirements: resourceRequirements } : {}), subspace_mapping_options: subspaceMappingOptions, coordination_policy_current: coordinationPolicyCurrent,
     coordination_singleton_policy_current: coordinationSingletonPolicyCurrent, blueprint_id: blueprint.id, target_space_id: spaceId, security,
     evaluation: { passed: value.conformanceCertificate.passed, total: value.conformanceCertificate.total,
       evidence: value.conformanceCertificate.evidence ?? "literal-lint", issued_at: value.conformanceCertificate.issuedAt },
@@ -1974,7 +1980,18 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
       } catch { subspaceRouteProposals.status = "retry_required"; }
     } else subspaceRouteProposals.status = "stored";
   }
-  return Response.json({...((await response.json<Record<string,unknown>>().catch(()=>({})))),assistantEmailSetups,coordinationPolicyApplication,coordinationSingletonPolicyApplication,subspaceRouteProposals},{status:response.status});
+  // MS-44: store pending resource proposals only. Activation never provisions, spends or grants.
+  let resourceProposals: { created: number; existing: number; status: "stored" | "retry_required" } | undefined;
+  if (templateResourceRequirementsEnabled(c.env) && blueprint.resourceRequirements?.length) {
+    resourceProposals = { created: 0, existing: 0, status: "retry_required" };
+    try {
+      const stored = await c.env.SPACE_DO.get(targetId).fetch(new Request(`http://space-do/template-resource-proposals/store?${new URLSearchParams({ actor_id: identity.userId })}`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ blueprint_id: blueprint.id, proposals: proposalsFromRequirements(blueprint.resourceRequirements) }) }));
+      const result = stored.ok ? await stored.json<{ created?: number; existing?: number }>().catch(() => null) : null;
+      if (result) resourceProposals = { created: result.created ?? 0, existing: result.existing ?? 0, status: "stored" };
+    } catch { /* stays retry_required */ }
+  }
+  return Response.json({...((await response.json<Record<string,unknown>>().catch(()=>({})))),assistantEmailSetups,coordinationPolicyApplication,coordinationSingletonPolicyApplication,subspaceRouteProposals,...(resourceProposals?{resourceProposals}:{})},{status:response.status});
 });
 
 async function installFirstPartySpaceExtension(env: Env, tenantId: string, spaceId: string, installedBy: string, extensionId: string,
@@ -8473,6 +8490,34 @@ app.post("/spaces/:spaceId/subspace-route-proposals/decide", async (c) => {
   // The SpaceDO re-checks manage on BOTH subspaces at decision time and returns one opaque 404 otherwise.
   return forwardToSpaceDO(stub, `/subspace-route-proposals/decide?${new URLSearchParams({ root_space_id: spaceId, actor_id: userId })}`, "POST",
     JSON.stringify({ id: body.id, decision: body.decision, ...(body.decision === "approve" ? { route_id: body.route_id } : {}) }));
+});
+
+// MS-44: pending template resource proposals. Static paths; every failure (flag off, no token, not owner/admin, unknown Space) is one not-found shape.
+async function templateResourceCaller(c: Context<{ Bindings: Env }>) {
+  const identity = getCallerIdentity(c), tenantId = identity.tenantId, spaceId = c.req.param("spaceId") ?? "";
+  if (!templateResourceRequirementsEnabled(c.env) || !tenantId || !identity.userId || !spaceId
+    || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET) || !await canExportBlueprint(c, spaceId)) return null;
+  const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status='active'").bind(spaceId, tenantId).first<{ id: string }>();
+  return owned ? { tenantId, spaceId, userId: identity.userId, role: identity.role } : null;
+}
+
+app.get("/spaces/:spaceId/template-resource-proposals", async (c) => {
+  const caller = await templateResourceCaller(c);
+  if (!caller) return c.json({ error_code: "not_found" }, 404);
+  const stub = await spaceDoStub(c.env, caller.spaceId, caller.tenantId);
+  return forwardToSpaceDO(stub, "/template-resource-proposals", "GET");
+});
+
+app.post("/spaces/:spaceId/template-resource-proposals", async (c) => {
+  const caller = await templateResourceCaller(c);
+  if (!caller) return c.json({ error_code: "not_found" }, 404);
+  let raw: unknown;
+  try { raw = JSON.parse(await readBoundedRequestText(c.req.raw, 16384)); } catch { return c.json({ error_code: "invalid_decision" }, 400); }
+  const decision = parseResourceProposalDecision(raw);
+  if (!decision) return c.json({ error_code: "invalid_decision" }, 400);
+  const stub = await spaceDoStub(c.env, caller.spaceId, caller.tenantId);
+  const result = await decideTemplateResourceProposal(c.env, caller, stub, decision);
+  return c.json(result.body, result.status as 200);
 });
 
 app.get("/spaces/:spaceId/subspace-blackboard/routes", async (c) => {

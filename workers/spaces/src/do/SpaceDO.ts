@@ -3642,7 +3642,32 @@ const MIGRATIONS: Migration[] = [
       );
       CREATE INDEX idx_worker_preference_audit_created ON worker_preference_audit(created_at);`,
   },
+  {
+    version: 165,
+    description: "store pending template resource proposals created by blueprint activation; they never provision, spend or grant",
+    up: `CREATE TABLE template_resource_proposals (
+        id TEXT PRIMARY KEY,
+        blueprint_id TEXT NOT NULL,
+        requirement_key TEXT NOT NULL,
+        resource_type TEXT NOT NULL,
+        required INTEGER NOT NULL CHECK(required IN (0,1)),
+        capabilities_json TEXT NOT NULL DEFAULT '[]',
+        preferred_access_mode TEXT,
+        grants_json TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL DEFAULT 'proposed' CHECK(status IN ('proposed','approving','approved','skipped','uncertain')),
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        decided_by TEXT,
+        decided_at TEXT,
+        result_json TEXT,
+        UNIQUE(blueprint_id,requirement_key)
+      );
+      CREATE INDEX idx_template_resource_proposals_status ON template_resource_proposals(status,created_at);`,
+  },
 ];
+
+interface TemplateResourceProposalRow { id: string; blueprint_id: string; requirement_key: string; resource_type: string; required: number;
+  capabilities_json: string; preferred_access_mode: string | null; grants_json: string; status: string; created_at: string; result_json: string | null }
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
 export const SPACE_DO_MIGRATIONS = MIGRATIONS;
@@ -7063,6 +7088,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (method === "POST" && url.pathname === "/subspace-route-proposals/decide") {
         return this.decideSubspaceRouteProposal(request, url.searchParams.get("root_space_id") ?? "", url.searchParams.get("actor_id") ?? "");
+      }
+      if (method === "POST" && url.pathname === "/template-resource-proposals/store") {
+        return this.storeTemplateResourceProposals(request, url.searchParams.get("actor_id") ?? "");
+      }
+      if (method === "GET" && url.pathname === "/template-resource-proposals") {
+        return this.listTemplateResourceProposals(url.searchParams.get("id"));
+      }
+      if (method === "POST" && url.pathname === "/template-resource-proposals/claim") {
+        return this.claimTemplateResourceProposal(request, url.searchParams.get("actor_id") ?? "");
+      }
+      if (method === "POST" && url.pathname === "/template-resource-proposals/finish") {
+        return this.finishTemplateResourceProposal(request, url.searchParams.get("actor_id") ?? "");
       }
       if (method === "GET" && url.pathname === "/subspace-blackboard/resource-authorize") {
         return this.authorizeSubspaceBlackboardResource(url.searchParams, url.searchParams.get("resource_links") === "true");
@@ -15084,6 +15121,88 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       created++;
     }
     return Response.json({ created, existing });
+  }
+
+  /** Inserts PENDING proposals only. This path never provisions, spends or grants. */
+  private async storeTemplateResourceProposals(request: Request, actorId: string): Promise<Response> {
+    let body: { blueprint_id?: unknown; proposals?: unknown };
+    try { body = JSON.parse(await readBoundedRequestText(request, 65536)); } catch { return Response.json({ error_code: "invalid_proposal" }, { status: 400 }); }
+    if (!body || typeof body.blueprint_id !== "string" || !body.blueprint_id || !Array.isArray(body.proposals) || body.proposals.length > 20 || !actorId)
+      return Response.json({ error_code: "invalid_proposal" }, { status: 400 });
+    const now = new Date().toISOString();
+    let created = 0, existing = 0;
+    for (const item of body.proposals as Array<Record<string, unknown>>) {
+      if (!item || typeof item.requirement_key !== "string" || typeof item.resource_type !== "string" || typeof item.required !== "boolean"
+          || !Array.isArray(item.capabilities) || !Array.isArray(item.grants)
+          || (item.preferred_access_mode != null && item.preferred_access_mode !== "managed" && item.preferred_access_mode !== "byok"))
+        return Response.json({ error_code: "invalid_proposal" }, { status: 400 });
+      const found = queryOne<{ id: string }>(this.ctx.storage.sql as never,
+        "SELECT id FROM template_resource_proposals WHERE blueprint_id=? AND requirement_key=?", body.blueprint_id, item.requirement_key);
+      if (found) { existing++; continue; }
+      execute(this.ctx.storage.sql as never,
+        `INSERT INTO template_resource_proposals(id,blueprint_id,requirement_key,resource_type,required,capabilities_json,preferred_access_mode,grants_json,status,created_by,created_at)
+         VALUES(?,?,?,?,?,?,?,?,'proposed',?,?)`, `trp_${crypto.randomUUID()}`, body.blueprint_id, item.requirement_key, item.resource_type, Number(item.required),
+        JSON.stringify(item.capabilities), item.preferred_access_mode ?? null, JSON.stringify(item.grants), actorId, now);
+      created++;
+    }
+    return Response.json({ created, existing });
+  }
+
+  private readTemplateResourceProposal(id: string) {
+    return queryOne<TemplateResourceProposalRow>(this.ctx.storage.sql as never,
+      `SELECT id,blueprint_id,requirement_key,resource_type,required,capabilities_json,preferred_access_mode,grants_json,status,created_at,result_json
+       FROM template_resource_proposals WHERE id=?`, id);
+  }
+
+  private templateResourceProposalView(row: TemplateResourceProposalRow) {
+    const parse = (json: string | null): unknown => { try { return json ? JSON.parse(json) : null; } catch { return null; } };
+    return { id: row.id, blueprint_id: row.blueprint_id, requirement_key: row.requirement_key, resource_type: row.resource_type, required: row.required === 1,
+      capabilities: parse(row.capabilities_json) ?? [], preferred_access_mode: row.preferred_access_mode, proposed_grants: parse(row.grants_json) ?? [],
+      status: row.status, created_at: row.created_at, result: parse(row.result_json) };
+  }
+
+  private listTemplateResourceProposals(id: string | null): Response {
+    if (id) {
+      const row = this.readTemplateResourceProposal(id);
+      return Response.json({ proposals: row ? [this.templateResourceProposalView(row)] : [] });
+    }
+    const ids = queryAll<{ id: string }>(this.ctx.storage.sql as never,
+      "SELECT id FROM template_resource_proposals WHERE status IN ('proposed','approving','uncertain') ORDER BY created_at,id LIMIT 50");
+    const proposals = ids.flatMap(({ id }) => { const row = this.readTemplateResourceProposal(id); return row ? [this.templateResourceProposalView(row)] : []; });
+    return Response.json({ proposals });
+  }
+
+  /** Claim is synchronous (no await after the read), so two concurrent approvals cannot both proceed to provision. */
+  private async claimTemplateResourceProposal(request: Request, actorId: string): Promise<Response> {
+    let body: { id?: unknown };
+    try { body = JSON.parse(await readBoundedRequestText(request, 4096)); } catch { return Response.json({ error_code: "invalid_decision" }, { status: 400 }); }
+    if (!body || typeof body.id !== "string" || !actorId) return Response.json({ error_code: "invalid_decision" }, { status: 400 });
+    const proposal = this.readTemplateResourceProposal(body.id);
+    if (!proposal) return Response.json({ error_code: "proposal_unavailable" }, { status: 404 });
+    if (proposal.status !== "proposed") return Response.json({ error_code: "proposal_already_decided", status: proposal.status }, { status: 409 });
+    execute(this.ctx.storage.sql as never, "UPDATE template_resource_proposals SET status='approving',decided_by=?,decided_at=? WHERE id=? AND status='proposed'",
+      actorId, new Date().toISOString(), proposal.id);
+    return Response.json({ proposal: this.templateResourceProposalView({ ...proposal, status: "approving" }) });
+  }
+
+  private async finishTemplateResourceProposal(request: Request, actorId: string): Promise<Response> {
+    let body: { id?: unknown; outcome?: unknown; result?: unknown };
+    try { body = JSON.parse(await readBoundedRequestText(request, 16384)); } catch { return Response.json({ error_code: "invalid_decision" }, { status: 400 }); }
+    if (!body || typeof body.id !== "string" || !actorId || !["approved", "skipped", "uncertain", "released"].includes(String(body.outcome)))
+      return Response.json({ error_code: "invalid_decision" }, { status: 400 });
+    const sql = this.ctx.storage.sql as never;
+    const proposal = this.readTemplateResourceProposal(body.id);
+    if (!proposal) return Response.json({ error_code: "proposal_unavailable" }, { status: 404 });
+    // Only the claimer's in-flight approval can be finished; a skip is decided directly from `proposed`.
+    const from = body.outcome === "skipped" ? "proposed" : "approving";
+    if (proposal.status !== from) return Response.json({ error_code: "proposal_already_decided", status: proposal.status }, { status: 409 });
+    if (body.outcome === "released") {
+      execute(sql, "UPDATE template_resource_proposals SET status='proposed',decided_by=NULL,decided_at=NULL WHERE id=? AND status='approving'", proposal.id);
+      return Response.json({ id: proposal.id, status: "proposed" });
+    }
+    execute(sql, "UPDATE template_resource_proposals SET status=?,decided_by=?,decided_at=?,result_json=? WHERE id=? AND status=?",
+      body.outcome as string, actorId, new Date().toISOString(), JSON.stringify(body.result ?? null), proposal.id, from);
+    return Response.json({ id: proposal.id, status: body.outcome });
   }
 
   private readSubspaceRouteProposal(id: string) {

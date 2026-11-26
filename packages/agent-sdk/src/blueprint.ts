@@ -5,6 +5,7 @@ import { PROJECT_KINDS } from "./canvas-runtime.js";
 import { validateBlueprintSetupSchema } from "./blueprint-setup-fields.js";
 import { validateSpaceCoordinationSingletonKeys } from "./space-coordination.js";
 import { validateBlueprintBusinessRoles } from "./blueprint-business-roles.js";
+import { validateBlueprintResourceRequirements } from "./blueprint-resource-requirements.js";
 import { validateBlueprintSubspaceRoles } from "./blueprint-subspace-roles.js";
 
 const BLUEPRINT_EXTENSION_SCOPES = new Set<GadgetScope>(["USER_PRIVATE", "SPACE_WIDE", "PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER", "SPACE_SHARED", "SPACE_USER"]);
@@ -113,6 +114,9 @@ export function instantiateBlueprint(blueprint: SpaceBlueprint, targetSpaceId: s
     });
     copy.subspaceRoles = declared.roles;
     copy.subspaceRouteProposals = declared.proposals;
+  }
+  if (copy.resourceRequirements !== undefined) {
+    copy.resourceRequirements = validateBlueprintResourceRequirements(copy.resourceRequirements);
   }
   if (copy.coordinationDefaults !== undefined) {
     const defaults = copy.coordinationDefaults as unknown;
